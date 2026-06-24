@@ -1,0 +1,33 @@
+[project]
+name = "pgbigdata"
+version = "1.0.0"
+description = "Public-data API ingestion into PostgreSQL (JSONB + typed columns)"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+pgbigdata = "pgbigdata.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
