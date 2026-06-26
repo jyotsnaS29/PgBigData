@@ -59,6 +59,17 @@ Unit tests need no database or network:
 make test
 ```
 
+### Explore it visually
+
+A Streamlit dashboard provides point-and-click slice-and-dice over the loaded
+data — filter by geography/state/population, rank, chart distributions, compare
+income vs. home value, and pivot by state:
+
+```bash
+pip install -e ".[dashboard]"
+make dashboard          # opens http://localhost:8501
+```
+
 ## What you get after a county load
 
 ```sql

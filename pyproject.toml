@@ -13,6 +13,10 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+dashboard = [
+    "streamlit>=1.40",
+    "pandas>=2.0",
+]
 
 [project.scripts]
 pgbigdata = "pgbigdata.cli:main"

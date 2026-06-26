@@ -1,4 +1,4 @@
-.PHONY: help db-up db-down install init-db ingest-county ingest-tract status test lint
+.PHONY: help db-up db-down install init-db ingest-county ingest-tract status test lint dashboard
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -24,6 +24,9 @@ ingest-tract: ## ingest 2022 ACS5 at tract level (chunked per state)
 
 status: ## show recent load runs
 	python -m pgbigdata.cli status
+
+dashboard: ## launch the Streamlit slice-and-dice UI at http://localhost:8501
+	streamlit run dashboard/app.py --server.port 8501
 
 test: ## run unit tests (no DB/network needed)
 	pytest -q
