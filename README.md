@@ -49,6 +49,11 @@ make ingest-county
 # Tract level fans out to one throttled, retried request per state (~85k rows):
 make ingest-tract
 
+# PUMS person-level microdata (chunked per state; weighted records):
+python -m pgbigdata.cli ingest-pums --year 2022                 # WY, VT, DC (fast)
+python -m pgbigdata.cli ingest-pums --year 2022 --states 06,48  # CA, TX
+python -m pgbigdata.cli ingest-pums --year 2022 --all-states    # nation
+
 # 5. See what ran
 make status
 ```

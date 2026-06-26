@@ -111,6 +111,11 @@ class CensusClient:
 
     # --- high level ----------------------------------------------------------
 
+    def get_rows(self, year: int, dataset: str, params: dict[str, str]) -> list[dict[str, str]]:
+        """Generic fetch: one request, returns rows as dicts. Reused by PUMS."""
+        url = f"{self.cfg.census_base_url}/{year}/{dataset}"
+        return self._rows_to_dicts(self._get(url, params))
+
     def list_state_fips(self, year: int, dataset: str) -> list[str]:
         """Fetch state FIPS codes used to fan out fine-grained geographies."""
         url = f"{self.cfg.census_base_url}/{year}/{dataset}"
