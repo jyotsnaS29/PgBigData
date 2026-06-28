@@ -39,8 +39,14 @@ Hard rules:
 """
 
 SUMMARY_PROMPT = (
-    "Answer the user's question in one or two sentences using ONLY the result "
-    "rows provided. Be specific with numbers. Do not mention SQL."
+    "You are given the FULL result of a SQL query, as CSV (header + rows). "
+    "Answer the user's question in 1-2 sentences using ONLY these rows.\n"
+    "Strict rules:\n"
+    "- Cite exact figures that appear in the data; round only for readability.\n"
+    "- NEVER invent, infer, or estimate any value that is not in the rows.\n"
+    "- If the data does not answer the question, say so plainly.\n"
+    "- If there are no data rows, reply exactly: No matching data.\n"
+    "- Do not mention SQL, CSV, columns, or that you were given a table."
 )
 
 
@@ -116,13 +122,28 @@ def generate_sql(question: str, schema: str) -> str:
     return _strip_fences(resp.choices[0].message.content or "")
 
 
+def _summary_messages(question: str, rows_preview: str) -> list[dict]:
+    return [
+        {"role": "system", "content": SUMMARY_PROMPT},
+        {"role": "user", "content": f"Question: {question}\n\nResult rows:\n{rows_preview}"},
+    ]
+
+
 def summarize(question: str, rows_preview: str) -> str:
     resp = _client().chat.completions.create(
-        model=model_name(),
-        temperature=0,
-        messages=[
-            {"role": "system", "content": SUMMARY_PROMPT},
-            {"role": "user", "content": f"Question: {question}\n\nResult rows:\n{rows_preview}"},
-        ],
+        model=model_name(), temperature=0,
+        messages=_summary_messages(question, rows_preview),
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+def summarize_stream(question: str, rows_preview: str):
+    """Yield the grounded answer token-by-token (for st.write_stream)."""
+    stream = _client().chat.completions.create(
+        model=model_name(), temperature=0, stream=True,
+        messages=_summary_messages(question, rows_preview),
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta

@@ -371,55 +371,118 @@ def render_cces() -> None:
 # ===========================================================================
 # Ask the data  (natural language -> SQL via OpenAI, read-only)
 # ===========================================================================
+EXAMPLES = [
+    "Which 5 counties had the highest median household income in 2024?",
+    "Weighted mean person income by age band from PUMS 2024",
+    "Average ACS county median income by party ID for CCES 2024 respondents",
+]
+
+
+def _answer_turn(nl_sql, question: str) -> dict:
+    """Run one assistant turn live (status + streaming). Returns a history entry
+    so it can be re-rendered on later reruns without re-calling OpenAI."""
+    entry = {"role": "assistant", "content": "", "sql": None, "table": None}
+
+    with st.status("Thinking…", expanded=True) as status:
+        st.write("✍️ Writing SQL…")
+        try:
+            schema = nl_sql.build_schema(run_df)
+            sql = nl_sql.generate_sql(question, schema)
+        except Exception as exc:  # noqa: BLE001
+            status.update(label="Couldn't reach OpenAI", state="error")
+            entry["content"] = f"⚠️ I couldn't reach the model: {exc}"
+            st.markdown(entry["content"])
+            return entry
+
+        entry["sql"] = sql
+        st.code(sql, language="sql")
+
+        ok, reason = nl_sql.is_safe(sql)
+        if not ok:
+            status.update(label="Refused", state="error")
+            entry["content"] = (
+                f"🛑 I won't run that — I only execute **read-only** queries "
+                f"({reason})."
+            )
+            st.markdown(entry["content"])
+            return entry
+
+        st.write("⏳ running the query…")
+        try:
+            df = run_readonly(sql)
+        except Exception as exc:  # noqa: BLE001
+            status.update(label="Query failed", state="error")
+            entry["content"] = f"⚠️ The query failed: {exc}"
+            st.markdown(entry["content"])
+            return entry
+
+        if df.empty:
+            status.update(label="No data", state="complete", expanded=False)
+            entry["content"] = (
+                "I checked the data and **found no matching rows**, so I can't "
+                "answer that — I won't guess."
+            )
+            st.markdown(entry["content"])
+            return entry
+
+        st.write("📊 summarizing the results…")
+        status.update(label="Done", state="complete", expanded=False)
+
+    # Outside the status box: show the grounded results + streamed answer.
+    entry["table"] = df.head(100)
+    st.dataframe(entry["table"], width="stretch", hide_index=True, height=300)
+    try:
+        entry["content"] = st.write_stream(
+            nl_sql.summarize_stream(question, df.head(100).to_csv(index=False))
+        )
+    except Exception:  # noqa: BLE001
+        entry["content"] = "_(Here are the results above.)_"
+        st.markdown(entry["content"])
+    st.caption("↑ Answer derived only from the query results shown above.")
+    return entry
+
+
 def render_ask() -> None:
     import nl_sql
 
-    st.title("Ask the data")
-    st.caption("Type a question in plain English. OpenAI writes a **read-only** SQL "
-               "query against the warehouse; we validate it, run it, and summarize.")
+    st.title("💬 Ask the data")
+    st.caption("A read-only analytics assistant. Ask in plain English — it writes "
+               "SQL, runs it, and answers **only from the results**.")
 
     if not os.environ.get("OPENAI_API_KEY"):
-        st.info("Set `OPENAI_API_KEY` on the server to enable this tab "
+        st.info("Set `OPENAI_API_KEY` on the server to enable this assistant "
                 f"(model: `{nl_sql.model_name()}`).")
         return
 
-    examples = [
-        "Which 5 counties had the highest median household income in 2024?",
-        "Weighted mean person income by age band from PUMS 2024",
-        "Average ACS county median income by party ID for CCES 2024 respondents",
-    ]
-    st.caption("Try: " + "  ·  ".join(f"*{e}*" for e in examples))
+    if "ask_msgs" not in st.session_state:
+        st.session_state.ask_msgs = []
 
-    q = st.text_input("Your question", placeholder=examples[0])
-    if not q:
+    col1, col2 = st.columns([4, 1])
+    col1.caption("Try: " + "  ·  ".join(f"*{e}*" for e in EXAMPLES))
+    if col2.button("Clear chat", width="stretch") and st.session_state.ask_msgs:
+        st.session_state.ask_msgs = []
+        st.rerun()
+
+    # Replay history (no re-calls — stored content only).
+    for m in st.session_state.ask_msgs:
+        with st.chat_message(m["role"]):
+            if m.get("sql"):
+                with st.expander("SQL"):
+                    st.code(m["sql"], language="sql")
+            if m.get("table") is not None:
+                st.dataframe(m["table"], width="stretch", hide_index=True, height=240)
+            st.markdown(m["content"])
+
+    prompt = st.chat_input("Ask about ACS, PUMS, or CCES…")
+    if not prompt:
         return
 
-    try:
-        schema = nl_sql.build_schema(run_df)
-        sql = nl_sql.generate_sql(q, schema)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not reach OpenAI: {exc}")
-        return
-
-    ok, reason = nl_sql.is_safe(sql)
-    with st.expander("Generated SQL", expanded=True):
-        st.code(sql, language="sql")
-    if not ok:
-        st.error(f"Refused to run this query: {reason}.")
-        return
-
-    try:
-        df = run_readonly(sql)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Query failed: {exc}")
-        return
-
-    st.dataframe(df, width="stretch", hide_index=True, height=360)
-    try:
-        summary = nl_sql.summarize(q, df.head(50).to_csv(index=False))
-        st.success(summary)
-    except Exception:  # noqa: BLE001
-        pass  # summary is best-effort; the table is the real answer
+    st.session_state.ask_msgs.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    with st.chat_message("assistant"):
+        entry = _answer_turn(nl_sql, prompt)
+    st.session_state.ask_msgs.append(entry)
 
 
 # ===========================================================================
