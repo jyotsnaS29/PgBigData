@@ -16,6 +16,7 @@ dev = [
 dashboard = [
     "streamlit>=1.40",
     "pandas>=2.0",
+    "openai>=1.40",
 ]
 
 [project.scripts]

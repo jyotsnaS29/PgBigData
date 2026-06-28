@@ -39,6 +39,24 @@ def table_exists(name: str) -> bool:
     return df.iloc[0]["t"] is not None
 
 
+def run_readonly(sql: str, max_rows: int = 200) -> pd.DataFrame:
+    """Run a generated query inside a READ ONLY transaction with a timeout, and
+    cap the rows returned. The transaction is rolled back regardless."""
+    conn = psycopg.connect(DATABASE_URL)
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")        # first stmt in txn
+            cur.execute("SET LOCAL statement_timeout = '15s'")
+            cur.execute(sql)
+            cols = [d.name for d in cur.description]
+            rows = cur.fetchmany(max_rows)
+        return pd.DataFrame(rows, columns=cols)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 # ===========================================================================
 # ACS aggregate view
 # ===========================================================================
@@ -351,18 +369,76 @@ def render_cces() -> None:
 
 
 # ===========================================================================
+# Ask the data  (natural language -> SQL via OpenAI, read-only)
+# ===========================================================================
+def render_ask() -> None:
+    import nl_sql
+
+    st.title("Ask the data")
+    st.caption("Type a question in plain English. OpenAI writes a **read-only** SQL "
+               "query against the warehouse; we validate it, run it, and summarize.")
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        st.info("Set `OPENAI_API_KEY` on the server to enable this tab "
+                f"(model: `{nl_sql.model_name()}`).")
+        return
+
+    examples = [
+        "Which 5 counties had the highest median household income in 2024?",
+        "Weighted mean person income by age band from PUMS 2024",
+        "Average ACS county median income by party ID for CCES 2024 respondents",
+    ]
+    st.caption("Try: " + "  ·  ".join(f"*{e}*" for e in examples))
+
+    q = st.text_input("Your question", placeholder=examples[0])
+    if not q:
+        return
+
+    try:
+        schema = nl_sql.build_schema(run_df)
+        sql = nl_sql.generate_sql(q, schema)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not reach OpenAI: {exc}")
+        return
+
+    ok, reason = nl_sql.is_safe(sql)
+    with st.expander("Generated SQL", expanded=True):
+        st.code(sql, language="sql")
+    if not ok:
+        st.error(f"Refused to run this query: {reason}.")
+        return
+
+    try:
+        df = run_readonly(sql)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Query failed: {exc}")
+        return
+
+    st.dataframe(df, width="stretch", hide_index=True, height=360)
+    try:
+        summary = nl_sql.summarize(q, df.head(50).to_csv(index=False))
+        st.success(summary)
+    except Exception:  # noqa: BLE001
+        pass  # summary is best-effort; the table is the real answer
+
+
+# ===========================================================================
 # Router
 # ===========================================================================
 st.sidebar.title("🔎 Census Explorer")
 try:
-    dataset = st.sidebar.radio("Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey"])
+    dataset = st.sidebar.radio(
+        "Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey", "💬 Ask the data"]
+    )
     st.sidebar.divider()
     if dataset == "ACS aggregate":
         render_acs()
     elif dataset == "PUMS microdata":
         render_pums()
-    else:
+    elif dataset == "CCES survey":
         render_cces()
+    else:
+        render_ask()
 except Exception as exc:  # noqa: BLE001
     st.error(
         f"Could not query Postgres at `{DATABASE_URL}`.\n\n{exc}\n\n"
