@@ -22,8 +22,15 @@ from .pums import loader as pums_loader
 from .pums import variables as pums_vars
 from .pums.client import fetch_pums
 from .pums.transform import transform_row as transform_pums_row
+from .cces import download as cces_download
+from .cces import loader as cces_loader
+from .cces import variables as cces_vars
+from .cces.transform import transform_row as transform_cces_row
 
-SQL_FILES = ["sql/001_schema.sql", "sql/002_views.sql", "sql/003_pums.sql"]
+SQL_FILES = [
+    "sql/001_schema.sql", "sql/002_views.sql",
+    "sql/003_pums.sql", "sql/004_cces.sql",
+]
 DEFAULT_DATASET = "acs/acs5"
 DEFAULT_PUMS_DATASET = "acs/acs1/pums"
 DEFAULT_PUMS_STATES = ["56", "50", "11"]  # WY, VT, DC — small, fast demo
@@ -102,6 +109,33 @@ def cmd_ingest_pums(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_cces(cfg: Config, args: argparse.Namespace) -> int:
+    file_id = args.file_id or cces_vars.DATAVERSE_FILE_IDS.get(args.year)
+    if not file_id:
+        print(
+            f"No known Dataverse file id for CCES {args.year}. "
+            f"Pass --file-id (known: {sorted(cces_vars.DATAVERSE_FILE_IDS)})."
+        )
+        return 1
+    dataset, label = "cces", "cces"
+
+    with connect(cfg.database_url) as conn:
+        if not args.force and already_loaded(conn, dataset, args.year, label):
+            print(f"cces {args.year} already loaded (use --force to re-run); skipping.")
+            return 0
+
+        path = cces_download.download(file_id, cces_download.cache_path(args.year, file_id))
+        rows = cces_download.iter_rows(path)
+        records = (
+            transform_cces_row(row, dataset=dataset, year=args.year) for row in rows
+        )
+        total = cces_loader.load(
+            conn, records, dataset=dataset, year=args.year, geography=label,
+        )
+    print(f"loaded {total} CCES respondents for {args.year}")
+    return 0
+
+
 def cmd_status(cfg: Config, _args: argparse.Namespace) -> int:
     with connect(cfg.database_url) as conn, conn.cursor() as cur:
         cur.execute(
@@ -141,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     pums.add_argument("--all-states", action="store_true", help="all 50 states + DC")
     pums.add_argument("--force", action="store_true", help="re-load even if present")
 
+    cces = sub.add_parser("ingest-cces", help="ingest a CCES survey year (bulk file)")
+    cces.add_argument("--year", type=int, default=2018)
+    cces.add_argument("--file-id", type=int, help="override Dataverse datafile id")
+    cces.add_argument("--force", action="store_true", help="re-load even if present")
+
     sub.add_parser("status", help="show recent load runs")
     return p
 
@@ -154,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         "init-db": cmd_init_db,
         "ingest-acs": cmd_ingest_acs,
         "ingest-pums": cmd_ingest_pums,
+        "ingest-cces": cmd_ingest_cces,
         "status": cmd_status,
     }
     return handlers[args.command](cfg, args)

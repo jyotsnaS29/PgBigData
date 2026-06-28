@@ -54,6 +54,10 @@ python -m pgbigdata.cli ingest-pums --year 2022                 # WY, VT, DC (fa
 python -m pgbigdata.cli ingest-pums --year 2022 --states 06,48  # CA, TX
 python -m pgbigdata.cli ingest-pums --year 2022 --all-states    # nation
 
+# CCES survey microdata (bulk file from Harvard Dataverse, ~60k respondents):
+python -m pgbigdata.cli ingest-cces --year 2018
+# respondents carry county FIPS -> join to ACS via the v_cces_acs_county view
+
 # 5. See what ran
 make status
 ```
