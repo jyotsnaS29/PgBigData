@@ -1,0 +1,123 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>PgBigData — Design</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    max-width:860px;margin:0 auto;padding:32px 24px;color:#1f2328;line-height:1.55}
+  h1,h2,h3{line-height:1.25;margin-top:1.6em} h1{border-bottom:2px solid #eaecef;padding-bottom:.3em}
+  h2{border-bottom:1px solid #eaecef;padding-bottom:.25em}
+  code{background:#f6f8fa;padding:.15em .35em;border-radius:4px;font-size:85%}
+  pre{background:#f6f8fa;padding:14px;border-radius:8px;overflow:auto}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:1em 0;font-size:92%}
+  th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left}
+  th{background:#f6f8fa} blockquote{color:#57606a;border-left:4px solid #d0d7de;margin:0;padding:.2em 1em}
+  a{color:#0969da;text-decoration:none} a:hover{text-decoration:underline}
+  .mermaid{margin:1.4em 0;text-align:center}
+  @media print{body{max-width:none} a{color:#1f2328}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head><body><h1>Design notes</h1>
+<h2>The core decision: JSONB vs. typed columns</h2>
+<p>Every incoming field gets one of two homes. The test is <strong>how we will use it</strong>,
+not what it is:</p>
+<blockquote>
+<p><strong>Promote to a typed column</strong> if we expect to <em>filter, sort, join, aggregate,
+or expose it directly</em> to the CMS / analysts.
+<strong>Leave it in JSONB</strong> if it&#39;s bulk payload we want to retain but query rarely,
+ad hoc, or not at all yet.</p>
+</blockquote>
+<p>This project does <strong>both at once</strong> rather than choosing globally:</p>
+<ul>
+<li><code>raw jsonb NOT NULL</code> holds the <strong>complete</strong> API response for every row. We
+never discard data, so a field we ignore today is still there tomorrow.</li>
+<li>A curated set of high-value fields is <strong>promoted</strong> to typed, indexed columns
+(<code>total_population</code>, <code>median_household_income</code>, …). The promotion map is one
+list in <a href="../src/pgbigdata/census/variables.py"><code>variables.py</code></a>.</li>
+</ul>
+<h3>Why this split, concretely</h3>
+<table>
+<thead>
+<tr>
+<th>Force</th>
+<th>Implication</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ACS has <em>tens of thousands</em> of variables per dataset</td>
+<td>Promoting all of them is absurd; a single JSONB column absorbs the long tail.</td>
+</tr>
+<tr>
+<td>We filter/sort on a <em>small, stable</em> subset</td>
+<td>Those belong in typed columns with btree indexes — JSONB extraction + casting per row is slow and unindexed by default.</td>
+</tr>
+<tr>
+<td>Requirements change</td>
+<td>Promotion is a cheap, additive migration (add a column, backfill from <code>raw</code>); we never re-ingest because the source data is already in JSONB.</td>
+</tr>
+<tr>
+<td>Downstream (Payload, modeling) wants clean types</td>
+<td>Typed columns give real <code>bigint</code>/<code>integer</code>, not text-in-JSON.</td>
+</tr>
+</tbody></table>
+<h3>Promotion is reversible and incremental</h3>
+<p>Because <code>raw</code> always holds everything, &quot;promote field X&quot; is just:</p>
+<pre><code class="language-sql">ALTER TABLE acs_observations ADD COLUMN housing_units bigint;
+UPDATE acs_observations SET housing_units = (raw -&gt;&gt; &#39;B25001_001E&#39;)::bigint;
+CREATE INDEX ON acs_observations (housing_units);
+</code></pre>
+<p>No new API calls. This is the main payoff of keeping the raw payload.</p>
+<h2>Indexing strategy</h2>
+<ul>
+<li><strong>btree</strong> on promoted columns that drive filters/sorts
+(<code>median_household_income</code>, <code>total_population</code>), as <em>partial</em> indexes
+(<code>WHERE col IS NOT NULL</code>) since ACS has many null/suppressed values — smaller
+index, no dead entries.</li>
+<li><strong>GIN with <code>jsonb_path_ops</code></strong> on <code>raw</code>. This serves containment (<code>@&gt;</code>) queries
+against un-promoted fields (e.g. <code>raw @&gt; &#39;{&quot;state&quot;:&quot;06&quot;}&#39;</code>). <code>jsonb_path_ops</code>
+is chosen over the default <code>jsonb_ops</code> because we only need containment, and
+it produces a smaller, faster index. The trade-off: it doesn&#39;t support
+key-exists (<code>?</code>) operators — acceptable here.</li>
+<li>Composite <code>(geography, year)</code> to scope queries to a level/vintage quickly.</li>
+</ul>
+<h2>Idempotency &amp; incremental loads</h2>
+<ul>
+<li><strong>Natural key</strong>: <code>(dataset, year, geography, geoid)</code>. The GEOID is built by
+concatenating Census geo codes (state+county+tract…), mirroring the official
+convention. The loader upserts with <code>ON CONFLICT … DO UPDATE</code>, so re-running a
+load is safe and self-healing — no duplicates, latest values win.</li>
+<li><strong>Watermark</strong>: <code>load_runs</code> records every run&#39;s params, status, row count, and
+errors. The CLI skips a <code>(dataset, year, geography)</code> that already has a
+<code>success</code> row unless <code>--force</code>, so a scheduled daily job is nearly free and
+only genuinely new vintages do work.</li>
+<li><strong>Bounded transactions</strong>: the loader commits per 500-row batch, so a failure
+midway leaves committed batches in place (safe — they&#39;ll just upsert again)
+and records a <code>failed</code> run for observability.</li>
+</ul>
+<h2>Scaling the API pulls</h2>
+<p>The Census API has <strong>no cursor/offset pagination</strong>. Large geographies are
+handled by <strong>fanning out over parent geography</strong>: you can&#39;t fetch every tract in
+the country at once, so the client issues one request per state (~50 calls),
+each throttled (min-interval limiter) and retried with exponential backoff +
+jitter on <code>429</code>/<code>5xx</code>/network errors. Results stream back through a single
+generator the loader consumes lazily, so memory stays flat regardless of total
+row count.</p>
+<p>Census also caps a request at 50 variables; the curated set stays under that.
+For wide pulls the same <code>client.fetch</code> chunking pattern extends to batching
+variable codes into ≤50-column requests and merging on GEOID.</p>
+<h2>Why no ORM</h2>
+<p>The whole point of the project is the storage model and indexing. Plain SQL +
+psycopg keeps the JSONB adaptation, upsert, and DDL fully visible and makes the
+batched-upsert hot path easy to reason about.</p>
+<h2>Applying the pattern to the other sources</h2>
+<ul>
+<li><strong>Voter files</strong> — bulk flat files, not an API. Same JSONB+typed split: promote
+the fields you match/segment on (county, precinct, registration status,
+vote-history flags), keep the rest in JSONB. Natural key = voter ID + file
+vintage; the same <code>load_runs</code> watermark drives incremental refreshes.</li>
+<li><strong>CCES / survey &amp; crosswalk</strong> — wide respondent tables. Promote weights, key
+demographics, and crosswalk keys (FIPS/PUMA) for joins to ACS; the long tail
+of survey items lives in JSONB until a model needs a specific item.</li>
+</ul>
+</body></html>

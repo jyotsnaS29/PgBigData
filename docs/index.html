@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PgBigData — Documentation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--fg:#1f2328;--muted:#57606a;--line:#d0d7de;--accent:#0969da;--card:#f6f8fa}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    margin:0;color:var(--fg);background:#fff;line-height:1.55}
+  header{background:#0d1117;color:#fff;padding:48px 24px}
+  .wrap{max-width:880px;margin:0 auto;padding:0 24px}
+  header h1{margin:0 0 6px;font-size:30px}
+  header p{margin:0;color:#9da7b3}
+  main{padding:32px 0 64px}
+  .lead{color:var(--muted);margin:0 0 28px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:#fff}
+  .card h3{margin:0 0 6px;font-size:18px}
+  .card p{margin:0 0 14px;color:var(--muted);font-size:14px}
+  .links a{display:inline-block;margin-right:14px;color:var(--accent);text-decoration:none;font-weight:600;font-size:14px}
+  .links a:hover{text-decoration:underline}
+  .pill{display:inline-block;background:var(--card);border:1px solid var(--line);
+    border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted);margin-right:6px}
+  footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding:24px;text-align:center}
+  a.repo{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>PgBigData — Documentation</h1>
+  <p>Public-data API ingestion → PostgreSQL (JSONB + typed columns) · ACS · PUMS · CCES</p>
+</div></header>
+<main class="wrap">
+  <p class="lead">
+    Live demo: <a class="repo" href="https://census.datallmai.com">census.datallmai.com</a> ·
+    Source: <a class="repo" href="https://github.com/jyotsnaS29/PgBigData">github.com/jyotsnaS29/PgBigData</a>
+  </p>
+  <div class="cards">
+    <div class="card">
+      <h3>Architecture &amp; End-to-End Guide</h3>
+      <p>The whole system: architecture, database schema, views &amp; aggregations, ingestion flow, dashboard, NL→SQL, deployment.</p>
+      <div class="links"><a href="architecture.html">Read →</a><a href="ARCHITECTURE.pdf">PDF ↓</a></div>
+    </div>
+    <div class="card">
+      <h3>Design notes</h3>
+      <p>The JSONB-vs-typed-column decision framework, indexing strategy, idempotency, and how it transfers to other sources.</p>
+      <div class="links"><a href="design.html">Read →</a><a href="DESIGN.pdf">PDF ↓</a></div>
+    </div>
+    <div class="card">
+      <h3>Payload CMS integration</h3>
+      <p>How the tables/views map to a headless CMS (Payload) — collections, fields, and sync.</p>
+      <div class="links"><a href="payload.html">Read →</a><a href="PAYLOAD.pdf">PDF ↓</a></div>
+    </div>
+    <div class="card">
+      <h3>Project overview (README)</h3>
+      <p>What it is, the patterns it demonstrates, and how to run it locally.</p>
+      <div class="links"><a href="overview.html">Read →</a><a href="OVERVIEW.pdf">PDF ↓</a></div>
+    </div>
+  </div>
+  <p style="margin-top:28px">
+    <span class="pill">ACS 2022–2024</span><span class="pill">PUMS 2022–2024</span>
+    <span class="pill">CCES 2022 &amp; 2024</span><span class="pill">PostgreSQL</span>
+    <span class="pill">Streamlit</span><span class="pill">NL→SQL</span>
+  </p>
+</main>
+<footer>PgBigData documentation · generated from the repo <code>/docs</code> directory.</footer>
+</body>
+</html>

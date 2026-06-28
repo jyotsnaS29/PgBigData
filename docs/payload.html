@@ -1,0 +1,140 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>PgBigData — Payload Integration</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    max-width:860px;margin:0 auto;padding:32px 24px;color:#1f2328;line-height:1.55}
+  h1,h2,h3{line-height:1.25;margin-top:1.6em} h1{border-bottom:2px solid #eaecef;padding-bottom:.3em}
+  h2{border-bottom:1px solid #eaecef;padding-bottom:.25em}
+  code{background:#f6f8fa;padding:.15em .35em;border-radius:4px;font-size:85%}
+  pre{background:#f6f8fa;padding:14px;border-radius:8px;overflow:auto}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:1em 0;font-size:92%}
+  th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left}
+  th{background:#f6f8fa} blockquote{color:#57606a;border-left:4px solid #d0d7de;margin:0;padding:.2em 1em}
+  a{color:#0969da;text-decoration:none} a:hover{text-decoration:underline}
+  .mermaid{margin:1.4em 0;text-align:center}
+  @media print{body{max-width:none} a{color:#1f2328}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head><body><h1>Exposing the data to Payload (headless CMS)</h1>
+<p>The goal: let editors reference real geography metrics inside structured content
+fields, and let downstream content-generation / modeling read clean, typed
+values — without coupling the CMS to the ingestion internals.</p>
+<h2>The contract is the views, not the tables</h2>
+<p>Payload reads from <code>v_acs_latest</code> (and friends), never from <code>acs_observations</code>
+directly. This means we can re-partition, promote new JSONB fields, or change
+batch internals without touching any CMS config. The views are the stable API.</p>
+<h2>Two integration shapes</h2>
+<h3>1. Read-only reference data (recommended start)</h3>
+<p>ACS metrics are reference data the CMS <em>reads</em> but doesn&#39;t <em>own</em>. The cleanest
+wiring is a thin read API (or a Payload custom endpoint / database adapter view)
+backed by <code>v_acs_latest</code>, surfaced as a <strong>relationship-like select</strong> in content
+fields:</p>
+<ul>
+<li>Editor picks a geography (county) in a content field.</li>
+<li>The field stores the stable <code>geoid</code>.</li>
+<li>Render/generation time, the platform joins <code>geoid → v_acs_latest</code> for
+<code>total_population</code>, <code>median_household_income</code>, etc.</li>
+</ul>
+<p>Storing the <code>geoid</code> (not a snapshot of the values) means content always reflects
+the latest loaded vintage.</p>
+<h3>2. Mirrored Payload collection</h3>
+<p>If editors need to browse/search geographies inside Payload&#39;s admin, define a
+read-mostly collection whose fields map 1:1 to the promoted columns:</p>
+<pre><code class="language-ts">// payload.config.ts — illustrative
+const Counties: CollectionConfig = {
+  slug: &#39;counties&#39;,
+  admin: { useAsTitle: &#39;name&#39;, defaultColumns: [&#39;name&#39;, &#39;totalPopulation&#39;] },
+  access: { create: () =&gt; false, update: () =&gt; false, delete: () =&gt; false },
+  fields: [
+    { name: &#39;geoid&#39;, type: &#39;text&#39;, unique: true, index: true, required: true },
+    { name: &#39;name&#39;, type: &#39;text&#39; },
+    { name: &#39;totalPopulation&#39;, type: &#39;number&#39; },
+    { name: &#39;medianHouseholdIncome&#39;, type: &#39;number&#39; },
+    { name: &#39;medianHomeValue&#39;, type: &#39;number&#39; },
+    // Long-tail ACS fields stay in Postgres JSONB; expose on demand as a
+    // read-only JSON field if a workflow genuinely needs them in-admin.
+    { name: &#39;raw&#39;, type: &#39;json&#39;, admin: { readOnly: true } },
+  ],
+}
+</code></pre>
+<p>The pipeline keeps this collection in sync via the same upsert key (<code>geoid</code>),
+either by pointing Payload&#39;s DB adapter at the view or by a small sync step that
+writes the promoted columns into the collection after each load.</p>
+<h2>Field-mapping table</h2>
+<table>
+<thead>
+<tr>
+<th>Postgres (view <code>v_acs_latest</code>)</th>
+<th>Type</th>
+<th>Payload field</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>geoid</code></td>
+<td>text</td>
+<td><code>geoid</code> (text, unique, index)</td>
+<td>join key / content reference</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>text</td>
+<td><code>name</code> (text)</td>
+<td><code>useAsTitle</code></td>
+</tr>
+<tr>
+<td><code>total_population</code></td>
+<td>bigint</td>
+<td><code>totalPopulation</code> (number)</td>
+<td>filter/sort</td>
+</tr>
+<tr>
+<td><code>median_household_income</code></td>
+<td>int</td>
+<td><code>medianHouseholdIncome</code> (number)</td>
+<td>filter/sort</td>
+</tr>
+<tr>
+<td><code>median_home_value</code></td>
+<td>int</td>
+<td><code>medianHomeValue</code> (number)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>median_gross_rent</code></td>
+<td>int</td>
+<td><code>medianGrossRent</code> (number)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>unemployed_count</code></td>
+<td>int</td>
+<td><code>unemployedCount</code> (number)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>bachelors_count</code></td>
+<td>int</td>
+<td><code>bachelorsCount</code> (number)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>raw</code></td>
+<td>jsonb</td>
+<td><code>raw</code> (json, readOnly)</td>
+<td>optional; long-tail fields</td>
+</tr>
+</tbody></table>
+<h2>Guidance</h2>
+<ul>
+<li><strong>Promote before you expose.</strong> A field that needs to be filterable/sortable in
+Payload should be a typed column first (see <a href="DESIGN.md">DESIGN.md</a>) — don&#39;t make
+the CMS reach into JSONB for hot fields.</li>
+<li><strong>Reference by <code>geoid</code>, not by snapshot</strong>, so content tracks the latest load.</li>
+<li><strong>Keep the CMS read-only</strong> over ingested data; the pipeline is the source of
+truth and the only writer.</li>
+</ul>
+</body></html>

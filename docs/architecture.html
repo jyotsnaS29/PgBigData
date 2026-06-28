@@ -1,0 +1,493 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>PgBigData — Architecture</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    max-width:860px;margin:0 auto;padding:32px 24px;color:#1f2328;line-height:1.55}
+  h1,h2,h3{line-height:1.25;margin-top:1.6em} h1{border-bottom:2px solid #eaecef;padding-bottom:.3em}
+  h2{border-bottom:1px solid #eaecef;padding-bottom:.25em}
+  code{background:#f6f8fa;padding:.15em .35em;border-radius:4px;font-size:85%}
+  pre{background:#f6f8fa;padding:14px;border-radius:8px;overflow:auto}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:1em 0;font-size:92%}
+  th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left}
+  th{background:#f6f8fa} blockquote{color:#57606a;border-left:4px solid #d0d7de;margin:0;padding:.2em 1em}
+  a{color:#0969da;text-decoration:none} a:hover{text-decoration:underline}
+  .mermaid{margin:1.4em 0;text-align:center}
+  @media print{body{max-width:none} a{color:#1f2328}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head><body><h1>PgBigData — Architecture &amp; End-to-End Guide</h1>
+<p>A reference for understanding the whole system: the architecture, the database
+(tables, indexes, views, aggregations), the ingestion pipelines, the dashboard,
+the natural-language query layer, and how a request flows end to end.</p>
+<blockquote>
+<p>TL;DR — Python CLIs ingest three U.S. public datasets (Census <strong>ACS</strong>, Census
+<strong>PUMS</strong>, <strong>CCES</strong> survey) into <strong>PostgreSQL</strong> using one storage model
+(<strong>typed columns for what you query + JSONB for everything else</strong>). A
+<strong>Streamlit</strong> app reads the same database for point-and-click analytics and an
+<strong>OpenAI-powered &quot;Ask the data&quot;</strong> assistant that turns English into read-only
+SQL. Everything runs in Docker behind nginx/HTTPS on a VPS.</p>
+</blockquote>
+<hr>
+<h2>1. High-level architecture</h2>
+<div class="mermaid">flowchart LR
+  subgraph Sources["External data sources"]
+    ACS["Census ACS API\n(REST, JSON)"]
+    PUMS["Census PUMS API\n(REST, per-state)"]
+    CCES["CCES on Harvard\nDataverse (bulk CSV/TAB)"]
+  end
+
+  subgraph Ingest["Ingestion (Python CLI: pgbigdata.cli)"]
+    CLIENT["HTTP client\nretry · throttle · chunk"]
+    DL["Dataverse download\n+ parse"]
+    XFORM["transform\n(pure: row -> record)"]
+    LOAD["loader\nbatched idempotent upsert"]
+  end
+
+  subgraph PG["PostgreSQL"]
+    T1["acs_observations"]
+    T2["pums_person"]
+    T3["cces_response"]
+    LR["load_runs (watermark)"]
+    VIEWS["views / aggregations"]
+  end
+
+  subgraph App["Streamlit dashboard"]
+    UI["ACS · PUMS · CCES tabs"]
+    ASK["Ask the data\n(NL -> SQL via OpenAI)"]
+  end
+
+  ACS --> CLIENT --> XFORM --> LOAD --> PG
+  PUMS --> CLIENT
+  CCES --> DL --> XFORM
+  PG --> VIEWS
+  VIEWS --> UI
+  PG --> UI
+  PG --> ASK
+  OPENAI["OpenAI API"] <--> ASK
+</div>
+<p><strong>Two ingestion modes, one storage model, two read paths.</strong></p>
+<ul>
+<li><em>Ingestion modes</em>: REST API at scale (ACS, PUMS) and bulk-file download (CCES).</li>
+<li><em>Storage model</em>: typed/indexed columns for the fields you filter/join/weight,
+plus a complete <code>raw</code> <strong>JSONB</strong> copy of every source record.</li>
+<li><em>Read paths</em>: the Streamlit tabs (SQL pushed down to Postgres) and the
+natural-language assistant (OpenAI writes the SQL, validated + run read-only).</li>
+</ul>
+<hr>
+<h2>2. Repository layout</h2>
+<pre><code>src/pgbigdata/
+  config.py            env-driven Config
+  db.py                psycopg connection helper + SQL file runner
+  cli.py               entrypoint: init-db | ingest-acs | ingest-pums | ingest-cces | status
+  census/              ACS + PUMS share this REST client
+    client.py          CensusClient: retry, throttle, geography chunking
+    geography.py       geography levels + GEOID construction
+    variables.py       ACS promotion map (typed vs JSONB) + value coercion
+    transform.py       pure ACS row -&gt; AcsRecord
+    loader.py          batched idempotent upsert + run tracking (shared helpers)
+  pums/                person-level microdata
+    variables.py       PUMS promotion map, state FIPS list
+    client.py          fetch_pums: chunk by state
+    transform.py       pure PUMS row -&gt; PumsRecord
+    loader.py          upsert into pums_person
+  cces/                bulk survey files
+    variables.py       promotion map w/ per-year column aliases + Dataverse file ids
+    download.py        cached Dataverse download + CSV/TAB auto-detect parse
+    transform.py       pure CCES row -&gt; CcesRecord
+    loader.py          upsert into cces_response
+sql/
+  001_schema.sql       acs_observations + indexes; load_runs
+  002_views.sql        v_acs_latest, v_acs_county_housing
+  003_pums.sql         pums_person + indexes; v_pums_income_by_puma
+  004_cces.sql         cces_response + indexes; v_cces_acs_county (crosswalk)
+dashboard/
+  app.py               Streamlit UI: ACS/PUMS/CCES tabs + Ask router
+  nl_sql.py            NL -&gt; SQL (OpenAI), schema introspection, SQL safety guard
+deploy/
+  deploy.sh            idempotent VPS deploy
+  nginx-census.datallmai.com.conf
+Dockerfile             app image (package + dashboard)
+docker-compose.prod.yml  db (private) + dashboard (localhost:8501)
+tests/                 pure-transform unit tests (no DB/network)
+</code></pre>
+<hr>
+<h2>3. The storage model — the central decision</h2>
+<p>Every incoming field gets one of two homes, decided by <strong>how it will be used</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Put it in…</th>
+<th>When</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Typed column</strong> (indexed)</td>
+<td>you filter, sort, join, aggregate, or expose it</td>
+<td><code>median_household_income</code>, <code>pwgtp</code>, <code>countyfips</code></td>
+</tr>
+<tr>
+<td><strong><code>raw</code> JSONB</strong></td>
+<td>bulk payload you keep but query rarely / not yet</td>
+<td>the other ~500 CCES survey items, ACS&#39;s long tail</td>
+</tr>
+</tbody></table>
+<p>Both happen at once: <strong><code>raw</code> always holds the complete source record</strong>, and a
+curated subset is <em>promoted</em> to typed columns. Consequences:</p>
+<ul>
+<li><strong>Nothing is lost</strong> — a field ignored today is still in <code>raw</code> tomorrow.</li>
+<li><strong>Promotion is a cheap, additive migration</strong> — no re-ingest needed:<pre><code class="language-sql">ALTER TABLE cces_response ADD COLUMN cc18_308a text;
+UPDATE cces_response SET cc18_308a = raw-&gt;&gt;&#39;CC18_308a&#39;;  -- straight from JSONB
+CREATE INDEX ON cces_response (cc18_308a);
+</code></pre>
+</li>
+<li>The promotion list lives in one place per source: <code>*/variables.py</code>.</li>
+</ul>
+<p>See <a href="DESIGN.md">DESIGN.md</a> for the full rationale and indexing trade-offs.</p>
+<hr>
+<h2>4. Database schema</h2>
+<h3>4.1 <code>acs_observations</code> — ACS aggregate (county + tract)</h3>
+<p>One row = one geography for one dataset vintage. Source: <a href="../sql/001_schema.sql">sql/001_schema.sql</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>dataset, year, geography, geoid</code></td>
+<td>text/int</td>
+<td><strong>PK</strong> (natural key)</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>text</td>
+<td>Census label</td>
+</tr>
+<tr>
+<td><code>total_population, median_household_income, median_home_value, median_gross_rent, unemployed_count, bachelors_count</code></td>
+<td>int/bigint</td>
+<td>promoted typed columns</td>
+</tr>
+<tr>
+<td><code>raw</code></td>
+<td>jsonb</td>
+<td>full API row</td>
+</tr>
+<tr>
+<td><code>created_at, updated_at</code></td>
+<td>timestamptz</td>
+<td></td>
+</tr>
+</tbody></table>
+<p>Indexes: <code>(geography, year)</code> btree; partial btree on <code>median_household_income</code>
+and <code>total_population</code>; <strong>GIN <code>jsonb_path_ops</code></strong> on <code>raw</code> for containment
+queries (<code>raw @&gt; &#39;{&quot;state&quot;:&quot;06&quot;}&#39;</code>).</p>
+<h3>4.2 <code>pums_person</code> — PUMS microdata</h3>
+<p>One row = one weighted person. Source: <a href="../sql/003_pums.sql">sql/003_pums.sql</a>.</p>
+<ul>
+<li><strong>PK</strong> <code>(dataset, year, serialno, sporder)</code> — household serial + person number.</li>
+<li>Promoted: <code>st, puma</code>, <code>pwgtp</code> (weight), <code>agep, sex, rac1p, hisp, schl, esr, cow, wkhp, jwmnp, occp, indp, pincp, wagp, hicov</code>; plus <code>raw</code> JSONB.</li>
+<li>Indexes: <code>(year, st, puma)</code>; partial on <code>pincp</code>; GIN on <code>raw</code>.</li>
+</ul>
+<h3>4.3 <code>cces_response</code> — CCES survey</h3>
+<p>One row = one survey respondent. Source: <a href="../sql/004_cces.sql">sql/004_cces.sql</a>.</p>
+<ul>
+<li><strong>PK</strong> <code>(year, caseid)</code>.</li>
+<li>Promoted: weights (<code>commonweight, commonpostweight, vvweight</code>), crosswalk keys
+(<code>inputstate, countyfips, cd</code>), demographics (<code>birthyr, gender, educ, race, hispanic, marstat</code>), politics (<code>votereg, pid3, pid7, ideo5</code>); plus <code>raw</code> JSONB
+holding all ~500 survey items.</li>
+<li>Indexes: <code>(year, inputstate)</code>, partial on <code>countyfips</code>, <code>(year, pid3)</code>.</li>
+</ul>
+<h3>4.4 <code>load_runs</code> — the watermark / audit log</h3>
+<p>Every ingestion run inserts a row here (<code>running</code> → <code>success</code>/<code>failed</code>) with the
+parameters, row count, and any error. Two jobs:</p>
+<ol>
+<li><strong>Idempotency/incremental</strong>: <code>already_loaded()</code> checks for a prior <code>success</code>
+on <code>(dataset, year, geography)</code> and skips unless <code>--force</code>.</li>
+<li><strong>Observability</strong>: <code>pgbigdata.cli status</code> reads the last runs.</li>
+</ol>
+<hr>
+<h2>5. Views &amp; aggregations</h2>
+<p>Views are the <strong>stable, consumer-facing contract</strong> (the dashboard and CMS read
+these, not base tables). Defined in <a href="../sql/002_views.sql">sql/002_views.sql</a> and
+<a href="../sql/004_cces.sql">sql/004_cces.sql</a>.</p>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>What it computes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>v_acs_latest</code></td>
+<td>Latest vintage per <code>(geography, geoid)</code> via <code>DISTINCT ON (... ) ORDER BY year DESC</code> — clean typed projection.</td>
+</tr>
+<tr>
+<td><code>v_acs_county_housing</code></td>
+<td>Demonstrates reading an <strong>un-promoted</strong> field straight from JSONB: <code>(raw-&gt;&gt;&#39;B25001_001E&#39;)::bigint</code>.</td>
+</tr>
+<tr>
+<td><code>v_pums_income_by_puma</code></td>
+<td><strong>Weighted aggregation</strong>: <code>sum(pwgtp)</code> = weighted population; <code>sum(pincp*pwgtp)/sum(pwgtp)</code> = weighted mean income, grouped by <code>(year, st, puma)</code>.</td>
+</tr>
+<tr>
+<td><code>v_cces_acs_county</code></td>
+<td><strong>The crosswalk</strong>: joins each CCES respondent to their ACS county — <code>a.year = c.year AND a.geoid = lpad(c.countyfips,5,&#39;0&#39;)</code>. Exposes <code>county_median_income</code>, <code>county_population</code> next to survey fields.</td>
+</tr>
+</tbody></table>
+<h3>Weighting (why it matters)</h3>
+<p>PUMS and CCES are <em>samples</em>; every population estimate must be weighted:</p>
+<ul>
+<li><strong>PUMS</strong>: weight by <code>pwgtp</code> (e.g. ~19.5k sampled people → ~1.9M population).</li>
+<li><strong>CCES</strong>: weight by <code>commonweight</code>.</li>
+<li><strong>Weighted mean</strong> of metric <em>m</em>: <code>sum(m * w) / sum(w)</code> (with <code>FILTER (WHERE m IS NOT NULL)</code> so nulls don&#39;t distort the denominator). The dashboard&#39;s PUMS
+and CCES tabs push exactly these expressions to Postgres.</li>
+</ul>
+<hr>
+<h2>6. Ingestion pipelines — end to end</h2>
+<p>All three follow the same shape: <strong>fetch → transform (pure) → load (idempotent
+upsert) → record run</strong>. They share the run-tracking + batching helpers in
+<a href="../src/pgbigdata/census/loader.py">census/loader.py</a>.</p>
+<h3>6.1 ACS (REST API)</h3>
+<p><code>pgbigdata.cli ingest-acs --year 2024 --geography county</code></p>
+<ol>
+<li><code>cmd_ingest_acs</code> (<a href="../src/pgbigdata/cli.py">cli.py</a>) checks <code>already_loaded()</code>.</li>
+<li><code>CensusClient.fetch()</code> (<a href="../src/pgbigdata/census/client.py">census/client.py</a>):<ul>
+<li>builds the request from <code>geography.py</code> (<code>for=</code>/<code>in=</code> params) and
+<code>variables.get_param()</code> (the <code>get=</code> variable list);</li>
+<li><strong>chunks</strong> fine geographies by parent — tracts fan out to one request per
+state (the API has no cursor pagination);</li>
+<li><code>_get()</code> applies a <strong>min-interval throttle</strong>, <strong>retries with exponential
+backoff + jitter</strong> on 429/5xx/network, and fails fast on 4xx / non-JSON
+(&quot;Missing Key&quot;) pages.</li>
+</ul>
+</li>
+<li><code>transform_row()</code> builds the GEOID, coerces numerics (Census &quot;jam&quot; sentinels
+like <code>-666666666</code> → NULL), splits into promoted columns + <code>raw</code>.</li>
+<li><code>loader.load()</code> upserts in 500-row batches (<code>ON CONFLICT ... DO UPDATE</code>),
+commits per batch, and writes the <code>load_runs</code> row.</li>
+</ol>
+<h3>6.2 PUMS (REST API, per-state)</h3>
+<p><code>pgbigdata.cli ingest-pums --year 2024 [--states 06,48 | --all-states]</code></p>
+<p>Same client/loader machinery; <code>fetch_pums()</code>
+(<a href="../src/pgbigdata/pums/client.py">pums/client.py</a>) iterates state FIPS issuing
+<code>for=state:NN</code>. Natural key <code>(serialno, sporder)</code>. Negative incomes are <strong>kept</strong>
+(a loss is valid), unlike the ACS jam-sentinel handling.</p>
+<h3>6.3 CCES (bulk file from Dataverse)</h3>
+<p><code>pgbigdata.cli ingest-cces --year 2024</code></p>
+<ol>
+<li><code>download()</code> (<a href="../src/pgbigdata/cces/download.py">cces/download.py</a>) resolves
+the Dataverse datafile id (per-year map in <code>variables.DATAVERSE_FILE_IDS</code>),
+follows the 303→S3 redirect, and <strong>caches</strong> the file (so re-runs don&#39;t
+re-pull 100+ MB).</li>
+<li><code>iter_rows()</code> <strong>auto-detects the delimiter</strong> — 2018 ships <code>.tab</code>, 2022/2024
+ship <code>.csv</code>.</li>
+<li><code>transform_row()</code> reads the first present <strong>column alias</strong> (<code>gender</code>/<code>gender4</code>,
+<code>cdid116</code>/<code>cdid118</code>/<code>cdid119</code>) so one schema spans survey years; ~500 items
+land in <code>raw</code>.</li>
+<li><code>loader.load()</code> upserts into <code>cces_response</code> on <code>(year, caseid)</code>.</li>
+</ol>
+<h3>Idempotency in one picture</h3>
+<pre><code>ingest ──&gt; already_loaded(dataset,year,geo)? ──yes(no --force)──&gt; skip
+                       │ no
+                       ▼
+        _start_run(status=running) ─► upsert batches (ON CONFLICT DO UPDATE)
+                       │                         │ (commit per batch)
+                       ▼                         ▼
+              _finish_run(success)        on error: _finish_run(failed)
+</code></pre>
+<hr>
+<h2>7. The dashboard</h2>
+<p><a href="../dashboard/app.py">dashboard/app.py</a> — one Streamlit app, a sidebar <strong>Dataset</strong>
+switch routes to four renderers:</p>
+<ul>
+<li><strong>ACS aggregate</strong> — loads a geography into pandas (cached), with a <strong>Year</strong>
+selector; tabs: sortable table, top-N rankings, distribution histogram,
+income-vs-home-value scatter, by-state pivot.</li>
+<li><strong>PUMS microdata</strong> — <strong>weighted aggregations done in SQL</strong> (<code>render_pums</code>):
+income by PUMA, age bands, education×employment cross-tab, per-PUMA pivot,
+sample rows. Year + state filters via <code>_where()</code>.</li>
+<li><strong>CCES survey</strong> — weighted party-ID / ideology / education, <strong>Party × county
+income</strong> (uses <code>v_cces_acs_county</code>), sample rows.</li>
+<li><strong>💬 Ask the data</strong> — see §8.</li>
+</ul>
+<p>Design choice: PUMS/CCES aggregations are <strong>pushed down to Postgres</strong> (CASE-based
+bucketing, <code>sum(w)</code>), not computed by pulling millions of rows into the browser —
+so it scales to a national pull.</p>
+<hr>
+<h2>8. &quot;Ask the data&quot; — natural language → SQL</h2>
+<p><a href="../dashboard/nl_sql.py">dashboard/nl_sql.py</a> + <code>render_ask()</code> in app.py. Flow:</p>
+<div class="mermaid">sequenceDiagram
+  participant U as User
+  participant A as render_ask
+  participant O as OpenAI
+  participant G as is_safe() guard
+  participant DB as Postgres (READ ONLY)
+  U->>A: question (st.chat_input)
+  A->>A: build_schema() — introspect tables+views
+  A->>O: generate_sql(question, schema)
+  O-->>A: SQL
+  A->>G: validate
+  alt unsafe (not SELECT / DDL / multi-stmt)
+    G-->>U: 🛑 refuse
+  else safe
+    A->>DB: run_readonly(sql)  (READ ONLY txn, statement_timeout, row cap)
+    alt no rows
+      DB-->>U: "no matching rows — won't guess"
+    else rows
+      A->>O: summarize_stream(question, results)
+      O-->>U: streamed, grounded answer (cites only result figures)
+    end
+  end
+</div>
+<p><strong>Grounding &amp; safety (defence in depth):</strong></p>
+<ol>
+<li><strong>Schema-aware prompt</strong> — <code>build_schema()</code> introspects the live tables <em>and</em>
+views, so the model uses real column names.</li>
+<li><strong><code>is_safe()</code></strong> — rejects anything that isn&#39;t a single <code>SELECT</code>/<code>WITH</code>
+(regex blocks <code>insert/update/delete/drop/alter/create/grant/...</code>, multi-stmt).</li>
+<li><strong><code>run_readonly()</code></strong> — runs inside a <code>SET TRANSACTION READ ONLY</code> with
+<code>statement_timeout</code> and a fetch cap, then rolls back. A bad query can&#39;t write
+or hang.</li>
+<li><strong>Grounded summary</strong> — <code>summarize_stream()</code> is instructed to use <em>only</em> the
+returned rows, cite exact figures, and reply &quot;No matching data&quot; when empty;
+the UI streams it token-by-token and labels it &quot;derived only from the results&quot;.</li>
+</ol>
+<p>Chat history is stored in <code>st.session_state</code> and re-rendered from saved content,
+so reruns never re-call OpenAI or re-query.</p>
+<hr>
+<h2>9. End-to-end code flow (three concrete traces)</h2>
+<p><strong>A. <code>init-db</code></strong> → <code>cli.cmd_init_db</code> → <code>db.connect()</code> → <code>db.run_sql_file()</code> for
+each of <code>sql/001…004</code> → tables, indexes, views exist.</p>
+<p><strong>B. A PUMS ingest</strong> →
+<code>cli.cmd_ingest_pums</code> → <code>already_loaded?</code> → <code>CensusClient.fetch_pums()</code> (per-state
+throttled/retried GETs) → generator of dict rows → <code>pums.transform.transform_row</code>
+→ <code>pums.loader.load()</code> (batched <code>ON CONFLICT</code> upsert, <code>load_runs</code> updated) →
+<code>pums_person</code> populated.</p>
+<p><strong>C. A dashboard &quot;Ask&quot; question</strong> →
+<code>render_ask</code> → <code>nl_sql.build_schema(run_df)</code> → <code>nl_sql.generate_sql</code> (OpenAI) →
+<code>nl_sql.is_safe</code> → <code>app.run_readonly</code> (read-only txn) → <code>st.dataframe</code> +
+<code>nl_sql.summarize_stream</code> (OpenAI, streamed) → grounded answer.</p>
+<hr>
+<h2>10. Deployment</h2>
+<div class="mermaid">flowchart TB
+  Internet -->|HTTPS 443| NGINX["nginx + certbot\ncensus.datallmai.com"]
+  NGINX -->|proxy 127.0.0.1:8501| DASH["dashboard container\n(Streamlit)"]
+  DASH -->|compose network| DB["db container\n(postgres:16, private)"]
+  DASH -->|HTTPS| OPENAI["OpenAI API"]
+  subgraph VPS["Hostinger VPS (Docker)"]
+    NGINX
+    DASH
+    DB
+  end
+</div>
+<ul>
+<li><strong><a href="../Dockerfile">Dockerfile</a></strong> builds one image (package + dashboard); the
+CLI runs as one-off <code>docker compose run --rm dashboard python -m pgbigdata.cli …</code>.</li>
+<li><strong><a href="../docker-compose.prod.yml">docker-compose.prod.yml</a></strong> — <code>db</code> has <strong>no public
+port</strong> (compose-network only); <code>dashboard</code> binds <strong><code>127.0.0.1:8501</code></strong> so only
+nginx reaches it.</li>
+<li><strong>nginx + certbot</strong> terminate TLS for <code>census.datallmai.com</code> (WebSocket
+upgrade headers required for Streamlit). Config:
+<a href="../deploy/nginx-census.datallmai.com.conf">deploy/nginx-census.datallmai.com.conf</a>.</li>
+<li><strong>Redeploy</strong>: <code>rsync</code> the tree to the VPS then <code>bash deploy/deploy.sh</code>
+(build → ingest → nginx → certbot, idempotent).</li>
+</ul>
+<hr>
+<h2>11. Configuration (env vars)</h2>
+<table>
+<thead>
+<tr>
+<th>Var</th>
+<th>Used by</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DATABASE_URL</code></td>
+<td>everything</td>
+<td>Postgres DSN (compose: <code>…@db:5432/…</code>)</td>
+</tr>
+<tr>
+<td><code>CENSUS_API_KEY</code></td>
+<td>ACS/PUMS ingest</td>
+<td>required by the Census API</td>
+</tr>
+<tr>
+<td><code>OPENAI_API_KEY</code>, <code>OPENAI_MODEL</code></td>
+<td>Ask tab</td>
+<td>NL→SQL (default <code>gpt-4o-mini</code>)</td>
+</tr>
+<tr>
+<td><code>POSTGRES_USER/PASSWORD/DB</code></td>
+<td>compose</td>
+<td>DB bootstrap</td>
+</tr>
+<tr>
+<td><code>REQUEST_TIMEOUT_S</code>, <code>MAX_RETRIES</code>, <code>BACKOFF_BASE_S</code>, <code>MIN_REQUEST_INTERVAL_S</code></td>
+<td>client</td>
+<td>HTTP tuning</td>
+</tr>
+<tr>
+<td><code>CCES_CACHE_DIR</code></td>
+<td>CCES</td>
+<td>download cache location</td>
+</tr>
+</tbody></table>
+<p>Secrets live only in <code>/root/pgbigdata/.env</code> on the VPS (git-ignored).</p>
+<hr>
+<h2>12. Data currently loaded</h2>
+<table>
+<thead>
+<tr>
+<th>Dataset</th>
+<th>Years</th>
+<th>Rows (approx)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ACS county</td>
+<td>2022, 2023, 2024</td>
+<td>3,222 each</td>
+</tr>
+<tr>
+<td>ACS tract</td>
+<td>2022, 2023, 2024</td>
+<td>~85,400 each</td>
+</tr>
+<tr>
+<td>PUMS person (3 states)</td>
+<td>2022, 2023, 2024</td>
+<td>~19,500–19,700 each</td>
+</tr>
+<tr>
+<td>CCES respondents</td>
+<td>2022, 2024</td>
+<td>60,000 each</td>
+</tr>
+</tbody></table>
+<p>ACS &amp; PUMS share the same years as CCES (CCES has no 2023 edition), so
+<code>v_cces_acs_county</code> joins survey year → matching ACS vintage.</p>
+<hr>
+<h2>13. Extending the system</h2>
+<ul>
+<li><strong>Promote a new field</strong>: add it to the relevant <code>variables.py</code> <code>PROMOTED</code>
+list + a column in the <code>sql/*.sql</code> DDL, then backfill from <code>raw</code> (no re-ingest).</li>
+<li><strong>New ACS variable in JSONB only</strong>: add its code to <code>EXTRA_FETCH</code> (ACS) — it
+lands in <code>raw</code>, reachable via <code>raw-&gt;&gt;&#39;CODE&#39;</code>.</li>
+<li><strong>New geography</strong>: add an entry to <code>census/geography.py::GEOGRAPHIES</code>.</li>
+<li><strong>New CCES year</strong>: add the Dataverse file id to <code>DATAVERSE_FILE_IDS</code> (and a
+column alias if the year renamed something).</li>
+<li><strong>New source entirely</strong> (e.g. voter files): add a <code>src/pgbigdata/&lt;source&gt;/</code>
+package mirroring <code>cces/</code> (download/transform/loader) + a <code>sql/00N_*.sql</code>,
+reusing the shared run-tracking helpers.</li>
+</ul>
+<hr>
+<p><em>Generated as living documentation; keep it in sync when schema or flow changes.</em></p>
+</body></html>

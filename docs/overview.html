@@ -1,0 +1,155 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>PgBigData — Overview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    max-width:860px;margin:0 auto;padding:32px 24px;color:#1f2328;line-height:1.55}
+  h1,h2,h3{line-height:1.25;margin-top:1.6em} h1{border-bottom:2px solid #eaecef;padding-bottom:.3em}
+  h2{border-bottom:1px solid #eaecef;padding-bottom:.25em}
+  code{background:#f6f8fa;padding:.15em .35em;border-radius:4px;font-size:85%}
+  pre{background:#f6f8fa;padding:14px;border-radius:8px;overflow:auto}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:1em 0;font-size:92%}
+  th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left}
+  th{background:#f6f8fa} blockquote{color:#57606a;border-left:4px solid #d0d7de;margin:0;padding:.2em 1em}
+  a{color:#0969da;text-decoration:none} a:hover{text-decoration:underline}
+  .mermaid{margin:1.4em 0;text-align:center}
+  @media print{body{max-width:none} a{color:#1f2328}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+</head><body><h1>PgBigData — Public-Data API Ingestion → PostgreSQL (JSONB + typed columns)</h1>
+<p>A small but production-shaped pipeline that ingests <strong>U.S. Census American
+Community Survey (ACS)</strong> data from the Census REST API and lands it in
+PostgreSQL using a deliberate <strong>JSONB-vs-typed-column</strong> storage model, ready to
+expose to a headless CMS (Payload).</p>
+<p>It&#39;s built to demonstrate the patterns that matter for ongoing public-data
+ingestion work:</p>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Where it lives</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pagination / chunking large pulls</td>
+<td><a href="src/pgbigdata/census/client.py"><code>census/client.py</code></a> — fan-out by parent geography</td>
+</tr>
+<tr>
+<td>Rate limiting + retries w/ backoff &amp; jitter</td>
+<td><a href="src/pgbigdata/census/client.py"><code>census/client.py</code></a></td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>optional API key, <a href="src/pgbigdata/config.py"><code>config.py</code></a></td>
+</tr>
+<tr>
+<td>Idempotent / incremental loads</td>
+<td>upsert on natural key + <code>load_runs</code> watermark, <a href="src/pgbigdata/census/loader.py"><code>census/loader.py</code></a></td>
+</tr>
+<tr>
+<td>JSONB vs typed columns</td>
+<td><a href="src/pgbigdata/census/variables.py"><code>census/variables.py</code></a> + <a href="sql/001_schema.sql"><code>sql/001_schema.sql</code></a>, rationale in <a href="docs/DESIGN.md">docs/DESIGN.md</a></td>
+</tr>
+<tr>
+<td>GIN indexing of payloads</td>
+<td><a href="sql/001_schema.sql"><code>sql/001_schema.sql</code></a></td>
+</tr>
+<tr>
+<td>CMS-facing contract</td>
+<td>views in <a href="sql/002_views.sql"><code>sql/002_views.sql</code></a>, mapping in <a href="docs/PAYLOAD.md">docs/PAYLOAD.md</a></td>
+</tr>
+<tr>
+<td>Pure, testable transforms</td>
+<td><a href="src/pgbigdata/census/transform.py"><code>census/transform.py</code></a> + <a href="tests/"><code>tests/</code></a></td>
+</tr>
+</tbody></table>
+<h2>Why Census ACS</h2>
+<p>It&#39;s the most accessible of the role&#39;s three core sources (ACS, voter files,
+CCES) — fully public, gated only by a free/instant API key — so this sample is
+runnable end-to-end. The
+ingestion patterns (chunked fan-out, idempotent upserts, JSONB+typed storage)
+transfer directly to voter files and CCES survey/crosswalk data; only the
+client and promotion map change.</p>
+<h2>Quickstart</h2>
+<pre><code class="language-bash"># 1. Start Postgres (or point DATABASE_URL at your own)
+make db-up
+
+# 2. Install + configure
+make install
+cp .env.example .env          # then add your free CENSUS_API_KEY (required)
+#   grab one instantly at https://api.census.gov/data/key_signup.html
+export $(grep -v &#39;^#&#39; .env | xargs)   # or use direnv / your shell of choice
+
+# 3. Create schema + views
+make init-db
+
+# 4. Ingest. County level is a single API call (~3k rows):
+make ingest-county
+
+# Tract level fans out to one throttled, retried request per state (~85k rows):
+make ingest-tract
+
+# PUMS person-level microdata (chunked per state; weighted records):
+python -m pgbigdata.cli ingest-pums --year 2022                 # WY, VT, DC (fast)
+python -m pgbigdata.cli ingest-pums --year 2022 --states 06,48  # CA, TX
+python -m pgbigdata.cli ingest-pums --year 2022 --all-states    # nation
+
+# CCES survey microdata (bulk file from Harvard Dataverse, ~60k respondents):
+python -m pgbigdata.cli ingest-cces --year 2018
+# respondents carry county FIPS -&gt; join to ACS via the v_cces_acs_county view
+
+# 5. See what ran
+make status
+</code></pre>
+<p>Unit tests need no database or network:</p>
+<pre><code class="language-bash">make test
+</code></pre>
+<h3>Explore it visually</h3>
+<p>A Streamlit dashboard provides point-and-click slice-and-dice over the loaded
+data — filter by geography/state/population, rank, chart distributions, compare
+income vs. home value, and pivot by state:</p>
+<pre><code class="language-bash">pip install -e &quot;.[dashboard]&quot;
+make dashboard          # opens http://localhost:8501
+</code></pre>
+<h2>What you get after a county load</h2>
+<pre><code class="language-sql">-- Typed columns: indexed, joinable, CMS-ready
+SELECT name, total_population, median_household_income
+FROM v_acs_latest
+WHERE geography = &#39;county&#39;
+ORDER BY median_household_income DESC NULLS LAST
+LIMIT 5;
+
+-- Un-promoted fields, straight from JSONB, no migration needed
+SELECT name, raw -&gt;&gt; &#39;B25001_001E&#39; AS housing_units
+FROM acs_observations
+WHERE geography = &#39;county&#39; LIMIT 5;
+
+-- JSONB containment, served by the GIN index
+SELECT count(*) FROM acs_observations
+WHERE raw @&gt; &#39;{&quot;state&quot;: &quot;06&quot;}&#39;;   -- all California rows
+</code></pre>
+<h2>Design docs</h2>
+<ul>
+<li><a href="docs/DESIGN.md">docs/DESIGN.md</a> — the JSONB-vs-typed-column decision framework, indexing, idempotency.</li>
+<li><a href="docs/PAYLOAD.md">docs/PAYLOAD.md</a> — how these tables/views map to Payload collections.</li>
+</ul>
+<h2>Project layout</h2>
+<pre><code>src/pgbigdata/
+  config.py            env-driven config
+  db.py                psycopg connection + SQL runner
+  cli.py               init-db | ingest-acs | status
+  census/
+    client.py          API client: retries, throttle, geography chunking
+    geography.py       geography levels + GEOID construction
+    variables.py       variable catalog + the promotion map
+    transform.py       pure row -&gt; record (typed cols + JSONB)
+    loader.py          idempotent batched upsert + run audit log
+sql/
+  001_schema.sql       tables, typed cols, JSONB, GIN + btree indexes
+  002_views.sql        CMS-facing views
+tests/
+  test_transform.py    pure-function tests, no infra
+</code></pre>
+</body></html>
