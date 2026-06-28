@@ -443,21 +443,24 @@ def _answer_turn(nl_sql, question: str) -> dict:
 
 
 def _assistant_css(big: bool) -> str:
-    if big:
-        size = "width:min(86vw,900px); height:82vh;"
-    else:
-        size = "width:min(92vw,400px); height:min(70vh,560px);"
+    size = "width:min(86vw,900px); height:82vh;" if big \
+        else "width:min(92vw,400px); height:min(70vh,560px);"
     return f"""
     <style>
+      /* expanded chat panel (container key="asst") */
       .st-key-asst {{
-        position:fixed; right:18px; bottom:18px; left:auto; z-index:1000;
+        position:fixed !important; right:20px; bottom:20px; left:auto; z-index:9999;
         {size}
         background:#fff; border:1px solid #d0d7de; border-radius:16px;
-        box-shadow:0 12px 38px rgba(0,0,0,.28); padding:10px 14px 4px;
-        overflow:auto; display:flex; flex-direction:column;
+        box-shadow:0 12px 38px rgba(0,0,0,.30); padding:12px 16px 6px; overflow:auto;
       }}
-      .st-key-asst-fab {{
-        position:fixed; right:18px; bottom:18px; left:auto; z-index:1000;
+      /* collapsed launcher (button key="asst_launch") */
+      .st-key-asst_launch {{
+        position:fixed !important; right:20px; bottom:20px; left:auto; z-index:9999; width:auto;
+      }}
+      .st-key-asst_launch button {{
+        border-radius:24px; box-shadow:0 8px 24px rgba(0,0,0,.30);
+        background:#ff4b4b; color:#fff; border:none; font-weight:600; padding:.55rem 1rem;
       }}
       section.main .block-container {{ padding-bottom:6rem; }}
     </style>
@@ -473,13 +476,13 @@ def render_assistant() -> None:
     ss.setdefault("asst_big", False)
     ss.setdefault("ask_msgs", [])
 
-    # Collapsed: just a launcher button pinned bottom-right.
+    # Collapsed: just a launcher button pinned bottom-right (the button's own
+    # st-key class is fixed-positioned — no wrapper needed).
     if not ss.asst_open:
         st.markdown(_assistant_css(False), unsafe_allow_html=True)
-        with st.container(key="asst-fab"):
-            if st.button("💬 Ask the data", key="asst_launch"):
-                ss.asst_open = True
-                st.rerun()
+        if st.button("💬 Ask the data", key="asst_launch"):
+            ss.asst_open = True
+            st.rerun()
         return
 
     st.markdown(_assistant_css(ss.asst_big), unsafe_allow_html=True)
