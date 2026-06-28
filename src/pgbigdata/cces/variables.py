@@ -13,10 +13,16 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CcesVar:
-    col: str        # source column name (== destination column)
-    pg_type: str    # Postgres type for DDL
-    kind: str       # 'bigint' | 'int' | 'float' | 'text'
+    col: str               # destination column name
+    pg_type: str           # Postgres type for DDL
+    kind: str              # 'bigint' | 'int' | 'float' | 'text'
     label: str
+    sources: tuple = ()    # source-column candidates; defaults to (col,)
+
+    def candidates(self) -> tuple:
+        # CCES renames columns across years (gender->gender4, cdid116->cdid118->
+        # cdid119); we read whichever candidate the file actually has.
+        return self.sources or (self.col,)
 
 
 KEY = CcesVar("caseid", "bigint", "bigint", "Respondent ID")
@@ -29,10 +35,11 @@ PROMOTED = [
     # Geography crosswalk keys — link respondents to ACS geographies.
     CcesVar("inputstate", "text", "text", "State FIPS"),
     CcesVar("countyfips", "text", "text", "County FIPS (joins to ACS county geoid)"),
-    CcesVar("cdid116",    "text", "text", "116th Congressional district"),
+    CcesVar("cd", "text", "text", "Congressional district",
+            sources=("cdid116", "cdid118", "cdid119")),
     # Core demographics.
     CcesVar("birthyr",  "integer", "int",  "Birth year"),
-    CcesVar("gender",   "text",    "text", "Gender (1=male, 2=female)"),
+    CcesVar("gender",   "text",    "text", "Gender", sources=("gender", "gender4")),
     CcesVar("educ",     "text",    "text", "Education category"),
     CcesVar("race",     "text",    "text", "Race category"),
     CcesVar("hispanic", "text",    "text", "Hispanic flag"),
@@ -44,11 +51,14 @@ PROMOTED = [
     CcesVar("ideo5",   "text", "text", "Ideology (5-point)"),
 ]
 
-# Harvard Dataverse datafile ids for the ingested .tab (tab-separated) version,
-# per survey year. Add more as needed, or pass --file-id on the CLI.
-#   CCES Common Content 2018 -> doi:10.7910/DVN/ZSBZ7K
+# Harvard Dataverse datafile ids, per survey year. The 2018 file is a .tab; the
+# 2022/2024 files are .csv — iter_rows auto-detects the delimiter.
+#   2018 -> doi:10.7910/DVN/ZSBZ7K   2022 -> doi:10.7910/DVN/PR4L8P
+#   2024 -> doi:10.7910/DVN/X11EP6
 DATAVERSE_FILE_IDS = {
     2018: 3588803,
+    2022: 10140882,
+    2024: 12050325,
 }
 
 

@@ -50,6 +50,20 @@ def test_crosswalk_keys_kept_as_text():
     assert rec.promoted["inputstate"] == "6"
 
 
+def test_column_aliases_across_years():
+    # 2018 names: gender / cdid116
+    r18 = transform_row(_row(), dataset="cces", year=2018)
+    assert r18.promoted["gender"] == "2"
+    assert r18.promoted["cd"] == "CA-17"
+    # 2022/2024 names: gender4 / cdid118 — same destination columns
+    r24 = transform_row(
+        {"caseid": "9", "gender4": "1", "cdid118": "TX-02"},
+        dataset="cces", year=2024,
+    )
+    assert r24.promoted["gender"] == "1"
+    assert r24.promoted["cd"] == "TX-02"
+
+
 def test_survey_items_only_in_jsonb():
     rec = transform_row(_row(), dataset="cces", year=2018)
     assert "CC18_308a" not in rec.promoted          # not promoted

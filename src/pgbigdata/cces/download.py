@@ -47,7 +47,10 @@ def download(file_id: int, dest: str, *, timeout: float = 120.0) -> str:
 
 
 def iter_rows(path: str) -> Iterator[dict[str, str]]:
-    """Yield each respondent as a dict. The file is tab-separated with a header;
-    utf-8-sig strips any BOM on the first column name."""
+    """Yield each respondent as a dict. Auto-detects the delimiter — 2018 ships
+    as .tab (tab-separated), 2022/2024 as .csv. utf-8-sig strips any BOM."""
     with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
-        yield from csv.DictReader(fh, delimiter="\t")
+        first = fh.readline()
+        delimiter = "\t" if first.count("\t") > first.count(",") else ","
+        fh.seek(0)
+        yield from csv.DictReader(fh, delimiter=delimiter)

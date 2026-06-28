@@ -76,6 +76,10 @@ def render_acs() -> None:
     geography = st.sidebar.selectbox("Geography", geos, index=geos.index("county") if "county" in geos else 0)
     df = acs_load(geography)
 
+    years = sorted(df["year"].dropna().unique(), reverse=True)
+    year = st.sidebar.selectbox("Year", years, index=0)
+    df = df[df["year"] == year]
+
     all_states = sorted(df["state"].dropna().unique())
     states = st.sidebar.multiselect("State", all_states, default=[])
     metric = st.sidebar.selectbox("Metric (ranking & charts)", ACS_METRICS, index=0)
@@ -93,7 +97,7 @@ def render_acs() -> None:
         f = f[f["name"].str.contains(name_q, case=False, na=False)]
 
     st.title("ACS aggregate explorer")
-    st.caption(f"`acs_observations` · {geography} · {len(f):,} of {len(df):,} rows after filters")
+    st.caption(f"`acs_observations` · {geography} · {year} · {len(f):,} of {len(df):,} rows after filters")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows", f"{len(f):,}")
     c2.metric(f"Median {metric}", f"{f[metric].median():,.0f}" if f[metric].notna().any() else "—")
@@ -167,10 +171,15 @@ def pums_states() -> list[str]:
     return run_df("SELECT DISTINCT st FROM pums_person ORDER BY st")["st"].tolist()
 
 
-def _where(states: list[str]) -> tuple[str, tuple]:
+@st.cache_data(ttl=300)
+def pums_years() -> list[int]:
+    return run_df("SELECT DISTINCT year FROM pums_person ORDER BY year DESC")["year"].tolist()
+
+
+def _where(year: int, states: list[str]) -> tuple[str, tuple]:
     if states:
-        return " WHERE st = ANY(%s)", (states,)
-    return "", ()
+        return " WHERE year = %s AND st = ANY(%s)", (year, states)
+    return " WHERE year = %s", (year,)
 
 
 def render_pums() -> None:
@@ -180,12 +189,14 @@ def render_pums() -> None:
                 "`python -m pgbigdata.cli ingest-pums --year 2022`")
         return
 
+    years = pums_years()
+    year = st.sidebar.selectbox("Year", years, index=0)
     avail = pums_states()
     states = st.sidebar.multiselect("State (FIPS)", avail, default=[])
-    w, p = _where(states)
+    w, p = _where(year, states)
 
     st.title("PUMS microdata explorer")
-    st.caption("`pums_person` · person-level records · all figures **weighted by PWGTP** unless noted")
+    st.caption(f"`pums_person` · {year} · person-level records · all figures **weighted by PWGTP** unless noted")
 
     kpi = run_df(f"""
       SELECT count(*) AS sample,

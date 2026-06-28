@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS cces_response (
     -- geography crosswalk keys (link respondents to ACS places)
     inputstate       text,
     countyfips       text,
-    cdid116          text,
+    cd               text,   -- congressional district (cdid116/118/119 by year)
 
     -- demographics
     birthyr          integer,
@@ -61,4 +61,5 @@ SELECT
 FROM cces_response c
 LEFT JOIN acs_observations a
        ON a.geography = 'county'
+      AND a.year = c.year                       -- align survey year to ACS vintage
       AND a.geoid = lpad(c.countyfips, 5, '0');

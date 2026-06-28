@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .variables import KEY, PROMOTED, coerce
+from .variables import KEY, PROMOTED, CcesVar, coerce
 
 
 @dataclass
@@ -16,12 +16,20 @@ class CcesRecord:
     raw: dict[str, str]
 
 
+def _value(var: CcesVar, row: dict[str, str]):
+    """Read the first source-column candidate present in this row."""
+    for src in var.candidates():
+        if src in row:
+            return coerce(var.kind, row.get(src))
+    return None
+
+
 def transform_row(row: dict[str, str], *, dataset: str, year: int) -> CcesRecord:
-    promoted = {v.col: coerce(v.kind, row.get(v.col)) for v in PROMOTED}
+    promoted = {v.col: _value(v, row) for v in PROMOTED}
     return CcesRecord(
         dataset=dataset,
         year=year,
-        caseid=coerce(KEY.kind, row.get(KEY.col)),
+        caseid=_value(KEY, row),
         promoted=promoted,
         raw=row,
     )
