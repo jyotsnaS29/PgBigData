@@ -442,85 +442,113 @@ def _answer_turn(nl_sql, question: str) -> dict:
     return entry
 
 
-def render_ask() -> None:
+def _assistant_css(big: bool) -> str:
+    if big:
+        size = "width:min(86vw,900px); height:82vh;"
+    else:
+        size = "width:min(92vw,400px); height:min(70vh,560px);"
+    return f"""
+    <style>
+      .st-key-asst {{
+        position:fixed; right:18px; bottom:18px; left:auto; z-index:1000;
+        {size}
+        background:#fff; border:1px solid #d0d7de; border-radius:16px;
+        box-shadow:0 12px 38px rgba(0,0,0,.28); padding:10px 14px 4px;
+        overflow:auto; display:flex; flex-direction:column;
+      }}
+      .st-key-asst-fab {{
+        position:fixed; right:18px; bottom:18px; left:auto; z-index:1000;
+      }}
+      section.main .block-container {{ padding-bottom:6rem; }}
+    </style>
+    """
+
+
+def render_assistant() -> None:
+    """A small floating chat assistant, expandable, available on every page."""
     import nl_sql
 
-    st.title("💬 Ask the data")
-    st.caption("A read-only analytics assistant. Ask in plain English — it writes "
-               "SQL, runs it, and answers **only from the results**.")
+    ss = st.session_state
+    ss.setdefault("asst_open", False)
+    ss.setdefault("asst_big", False)
+    ss.setdefault("ask_msgs", [])
 
-    # Float the chat input as a widget in the bottom-right corner.
-    st.markdown(
-        """
-        <style>
-        [data-testid="stChatInput"] {
-            position: fixed; right: 1.5rem; bottom: 1.5rem; left: auto;
-            width: min(460px, 92vw); z-index: 1000;
-            box-shadow: 0 6px 28px rgba(0,0,0,.30); border-radius: 14px;
-        }
-        /* keep the last messages clear of the floating box */
-        section.main .block-container { padding-bottom: 7rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if not os.environ.get("OPENAI_API_KEY"):
-        st.info("Set `OPENAI_API_KEY` on the server to enable this assistant "
-                f"(model: `{nl_sql.model_name()}`).")
+    # Collapsed: just a launcher button pinned bottom-right.
+    if not ss.asst_open:
+        st.markdown(_assistant_css(False), unsafe_allow_html=True)
+        with st.container(key="asst-fab"):
+            if st.button("💬 Ask the data", key="asst_launch"):
+                ss.asst_open = True
+                st.rerun()
         return
 
-    if "ask_msgs" not in st.session_state:
-        st.session_state.ask_msgs = []
+    st.markdown(_assistant_css(ss.asst_big), unsafe_allow_html=True)
+    with st.container(key="asst"):
+        h1, h2, h3, h4 = st.columns([6, 1, 1, 1])
+        h1.markdown("**💬 Ask the data**")
+        if h2.button("🗑", key="asst_clear", help="Clear chat"):
+            ss.ask_msgs = []
+            st.rerun()
+        if h3.button("⤢" if not ss.asst_big else "⤡", key="asst_size",
+                     help="Resize"):
+            ss.asst_big = not ss.asst_big
+            st.rerun()
+        if h4.button("✕", key="asst_hide", help="Minimize"):
+            ss.asst_open = False
+            st.rerun()
 
-    col1, col2 = st.columns([4, 1])
-    col1.caption("Try: " + "  ·  ".join(f"*{e}*" for e in EXAMPLES))
-    if col2.button("Clear chat", width="stretch") and st.session_state.ask_msgs:
-        st.session_state.ask_msgs = []
-        st.rerun()
+        if not os.environ.get("OPENAI_API_KEY"):
+            st.info("Set `OPENAI_API_KEY` on the server to enable this assistant.")
+            return
 
-    # Replay history (no re-calls — stored content only).
-    for m in st.session_state.ask_msgs:
-        with st.chat_message(m["role"]):
-            if m.get("sql"):
-                with st.expander("SQL"):
-                    st.code(m["sql"], language="sql")
-            if m.get("table") is not None:
-                st.dataframe(m["table"], width="stretch", hide_index=True, height=240)
-            st.markdown(m["content"])
+        if not ss.ask_msgs:
+            st.caption("Ask in plain English — I write read-only SQL and answer "
+                       "**only from the results**. Try:")
+            for e in EXAMPLES:
+                st.caption(f"• {e}")
 
-    prompt = st.chat_input("Ask about ACS, PUMS, or CCES…")
-    if not prompt:
-        return
+        # Replay history (stored content only — no re-calls).
+        for m in ss.ask_msgs:
+            with st.chat_message(m["role"]):
+                if m.get("sql"):
+                    with st.expander("SQL"):
+                        st.code(m["sql"], language="sql")
+                if m.get("table") is not None:
+                    st.dataframe(m["table"], width="stretch", hide_index=True, height=220)
+                st.markdown(m["content"])
 
-    st.session_state.ask_msgs.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    with st.chat_message("assistant"):
-        entry = _answer_turn(nl_sql, prompt)
-    st.session_state.ask_msgs.append(entry)
+        with st.form(key="asst_form", clear_on_submit=True):
+            q = st.text_input("Ask", label_visibility="collapsed",
+                              placeholder="Ask about ACS, PUMS, or CCES…")
+            sent = st.form_submit_button("Send", width="stretch")
+
+        if sent and q.strip():
+            ss.ask_msgs.append({"role": "user", "content": q})
+            with st.chat_message("user"):
+                st.markdown(q)
+            with st.chat_message("assistant"):
+                entry = _answer_turn(nl_sql, q)
+            ss.ask_msgs.append(entry)
 
 
 # ===========================================================================
 # Router
 # ===========================================================================
 st.sidebar.title("🔎 Census Explorer")
+dataset = st.sidebar.radio("Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey"])
+st.sidebar.divider()
 try:
-    dataset = st.sidebar.radio(
-        "Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey", "💬 Ask the data"]
-    )
-    st.sidebar.divider()
     if dataset == "ACS aggregate":
         render_acs()
     elif dataset == "PUMS microdata":
         render_pums()
-    elif dataset == "CCES survey":
-        render_cces()
     else:
-        render_ask()
+        render_cces()
 except Exception as exc:  # noqa: BLE001
     st.error(
         f"Could not query Postgres at `{DATABASE_URL}`.\n\n{exc}\n\n"
         "Is the DB up? `docker ps --filter name=pgbigdata-db`"
     )
-    st.stop()
+
+# The assistant floats on every page, regardless of the selected dataset.
+render_assistant()
