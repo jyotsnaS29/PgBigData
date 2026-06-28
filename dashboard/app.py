@@ -257,16 +257,112 @@ def render_pums() -> None:
 
 
 # ===========================================================================
+# CCES survey view  (weighted by commonweight; crosswalk joins to ACS)
+# ===========================================================================
+CCES_PID3 = """CASE pid3 WHEN '1' THEN 'Democrat' WHEN '2' THEN 'Republican'
+  WHEN '3' THEN 'Independent' WHEN '4' THEN 'Other' ELSE 'Not sure' END"""
+CCES_IDEO5 = """CASE ideo5 WHEN '1' THEN '1 Very liberal' WHEN '2' THEN '2 Liberal'
+  WHEN '3' THEN '3 Moderate' WHEN '4' THEN '4 Conservative'
+  WHEN '5' THEN '5 Very conservative' ELSE '6 Not sure / other' END"""
+CCES_EDUC = """CASE educ WHEN '1' THEN '1 No HS' WHEN '2' THEN '2 HS grad'
+  WHEN '3' THEN '3 Some college' WHEN '4' THEN '4 2-yr degree'
+  WHEN '5' THEN '5 4-yr degree' WHEN '6' THEN '6 Postgrad' ELSE '? Unknown' END"""
+
+
+@st.cache_data(ttl=300)
+def cces_years() -> list[int]:
+    return run_df("SELECT DISTINCT year FROM cces_response ORDER BY year DESC")["year"].tolist()
+
+
+@st.cache_data(ttl=300)
+def cces_states() -> list[str]:
+    return run_df("SELECT DISTINCT inputstate FROM cces_response WHERE inputstate IS NOT NULL ORDER BY inputstate")["inputstate"].tolist()
+
+
+def _cces_where(year: int, states: list[str]) -> tuple[str, tuple]:
+    if states:
+        return " WHERE year = %s AND inputstate = ANY(%s)", (year, states)
+    return " WHERE year = %s", (year,)
+
+
+def render_cces() -> None:
+    if not table_exists("cces_response"):
+        st.title("CCES survey")
+        st.info("No `cces_response` table yet. Load some: "
+                "`python -m pgbigdata.cli ingest-cces --year 2022`")
+        return
+
+    years = cces_years()
+    year = st.sidebar.selectbox("Year", years, index=0)
+    states = st.sidebar.multiselect("State (FIPS)", cces_states(), default=[])
+    w, p = _cces_where(year, states)
+
+    st.title("CCES survey explorer")
+    st.caption(f"`cces_response` · {year} · survey respondents · figures **weighted by commonweight**")
+
+    kpi = run_df(f"""
+      SELECT count(*) AS sample, count(DISTINCT inputstate) AS states,
+        round(100.0*sum(commonweight) FILTER (WHERE pid3='1')
+              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0),1) AS dem,
+        round(100.0*sum(commonweight) FILTER (WHERE pid3='2')
+              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0),1) AS rep
+      FROM cces_response{w}""", p).iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Respondents", f"{int(kpi['sample']):,}")
+    c2.metric("States", int(kpi["states"]))
+    c3.metric("Weighted % Democrat", f"{kpi['dem']}%")
+    c4.metric("Weighted % Republican", f"{kpi['rep']}%")
+
+    t_pid, t_ideo, t_edu, t_xwalk, t_tbl = st.tabs(
+        ["🗳️ Party ID", "🧭 Ideology", "🎓 Education", "🔗 Party × county income", "📋 Sample rows"]
+    )
+
+    with t_pid:
+        df = run_df(f"SELECT {CCES_PID3} AS party, sum(commonweight) AS weighted FROM cces_response{w} GROUP BY party ORDER BY weighted DESC", p)
+        st.bar_chart(df.set_index("party"), horizontal=True, height=320)
+
+    with t_ideo:
+        df = run_df(f"SELECT {CCES_IDEO5} AS ideology, sum(commonweight) AS weighted FROM cces_response{w} GROUP BY ideology ORDER BY ideology", p)
+        st.bar_chart(df.set_index("ideology"), height=380)
+
+    with t_edu:
+        df = run_df(f"SELECT {CCES_EDUC} AS education, sum(commonweight) AS weighted FROM cces_response{w} GROUP BY education ORDER BY education", p)
+        st.bar_chart(df.set_index("education"), height=380)
+
+    with t_xwalk:
+        st.caption("The crosswalk payoff: each respondent's **ACS county median income**, "
+                   "averaged by party ID. Joins CCES → ACS on county FIPS + year.")
+        df = run_df(f"""
+          SELECT {CCES_PID3} AS party,
+                 count(*) AS respondents,
+                 round(sum(county_median_income::numeric*commonweight)
+                       FILTER (WHERE county_median_income IS NOT NULL)
+                     / NULLIF(sum(commonweight) FILTER (WHERE county_median_income IS NOT NULL),0)) AS avg_county_income
+          FROM v_cces_acs_county{w}
+          GROUP BY party ORDER BY avg_county_income DESC NULLS LAST""", p)
+        st.bar_chart(df.set_index("party")[["avg_county_income"]], horizontal=True, height=320)
+        st.dataframe(df, width="stretch", hide_index=True)
+
+    with t_tbl:
+        df = run_df(f"""
+          SELECT caseid, inputstate, countyfips, cd, gender, educ, pid3, ideo5, commonweight
+          FROM cces_response{w} ORDER BY commonweight DESC NULLS LAST LIMIT 500""", p)
+        st.dataframe(df, width="stretch", hide_index=True, height=440)
+
+
+# ===========================================================================
 # Router
 # ===========================================================================
 st.sidebar.title("🔎 Census Explorer")
 try:
-    dataset = st.sidebar.radio("Dataset", ["ACS aggregate", "PUMS microdata"])
+    dataset = st.sidebar.radio("Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey"])
     st.sidebar.divider()
     if dataset == "ACS aggregate":
         render_acs()
-    else:
+    elif dataset == "PUMS microdata":
         render_pums()
+    else:
+        render_cces()
 except Exception as exc:  # noqa: BLE001
     st.error(
         f"Could not query Postgres at `{DATABASE_URL}`.\n\n{exc}\n\n"
