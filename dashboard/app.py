@@ -320,10 +320,10 @@ def render_cces() -> None:
 
     kpi = run_df(f"""
       SELECT count(*) AS sample, count(DISTINCT inputstate) AS states,
-        round(100.0*sum(commonweight) FILTER (WHERE pid3='1')
-              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0),1) AS dem,
-        round(100.0*sum(commonweight) FILTER (WHERE pid3='2')
-              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0),1) AS rep
+        round((100.0*sum(commonweight) FILTER (WHERE pid3='1')
+              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0))::numeric,1) AS dem,
+        round((100.0*sum(commonweight) FILTER (WHERE pid3='2')
+              / NULLIF(sum(commonweight) FILTER (WHERE pid3 IN ('1','2','3')),0))::numeric,1) AS rep
       FROM cces_response{w}""", p).iloc[0]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Respondents", f"{int(kpi['sample']):,}")
@@ -448,6 +448,22 @@ def render_ask() -> None:
     st.title("💬 Ask the data")
     st.caption("A read-only analytics assistant. Ask in plain English — it writes "
                "SQL, runs it, and answers **only from the results**.")
+
+    # Float the chat input as a widget in the bottom-right corner.
+    st.markdown(
+        """
+        <style>
+        [data-testid="stChatInput"] {
+            position: fixed; right: 1.5rem; bottom: 1.5rem; left: auto;
+            width: min(460px, 92vw); z-index: 1000;
+            box-shadow: 0 6px 28px rgba(0,0,0,.30); border-radius: 14px;
+        }
+        /* keep the last messages clear of the floating box */
+        section.main .block-container { padding-bottom: 7rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if not os.environ.get("OPENAI_API_KEY"):
         st.info("Set `OPENAI_API_KEY` on the server to enable this assistant "
