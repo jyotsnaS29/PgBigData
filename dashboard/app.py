@@ -371,174 +371,15 @@ def render_cces() -> None:
 # ===========================================================================
 # Ask the data  (natural language -> SQL via OpenAI, read-only)
 # ===========================================================================
-EXAMPLES = [
-    "Which 5 counties had the highest median household income in 2024?",
-    "Weighted mean person income by age band from PUMS 2024",
-    "Average ACS county median income by party ID for CCES 2024 respondents",
-]
-
-
-def _answer_turn(nl_sql, question: str) -> dict:
-    """Run one assistant turn live (status + streaming). Returns a history entry
-    so it can be re-rendered on later reruns without re-calling OpenAI."""
-    entry = {"role": "assistant", "content": "", "sql": None, "table": None}
-
-    with st.status("Thinking…", expanded=True) as status:
-        st.write("✍️ Writing SQL…")
-        try:
-            schema = nl_sql.build_schema(run_df)
-            sql = nl_sql.generate_sql(question, schema)
-        except Exception as exc:  # noqa: BLE001
-            status.update(label="Couldn't reach OpenAI", state="error")
-            entry["content"] = f"⚠️ I couldn't reach the model: {exc}"
-            st.markdown(entry["content"])
-            return entry
-
-        entry["sql"] = sql
-        st.code(sql, language="sql")
-
-        ok, reason = nl_sql.is_safe(sql)
-        if not ok:
-            status.update(label="Refused", state="error")
-            entry["content"] = (
-                f"🛑 I won't run that — I only execute **read-only** queries "
-                f"({reason})."
-            )
-            st.markdown(entry["content"])
-            return entry
-
-        st.write("⏳ running the query…")
-        try:
-            df = run_readonly(sql)
-        except Exception as exc:  # noqa: BLE001
-            status.update(label="Query failed", state="error")
-            entry["content"] = f"⚠️ The query failed: {exc}"
-            st.markdown(entry["content"])
-            return entry
-
-        if df.empty:
-            status.update(label="No data", state="complete", expanded=False)
-            entry["content"] = (
-                "I checked the data and **found no matching rows**, so I can't "
-                "answer that — I won't guess."
-            )
-            st.markdown(entry["content"])
-            return entry
-
-        st.write("📊 summarizing the results…")
-        status.update(label="Done", state="complete", expanded=False)
-
-    # Outside the status box: show the grounded results + streamed answer.
-    entry["table"] = df.head(100)
-    st.dataframe(entry["table"], width="stretch", hide_index=True, height=300)
-    try:
-        entry["content"] = st.write_stream(
-            nl_sql.summarize_stream(question, df.head(100).to_csv(index=False))
-        )
-    except Exception:  # noqa: BLE001
-        entry["content"] = "_(Here are the results above.)_"
-        st.markdown(entry["content"])
-    st.caption("↑ Answer derived only from the query results shown above.")
-    return entry
-
-
-def _assistant_css(big: bool) -> str:
-    size = "width:min(86vw,900px); height:82vh;" if big \
-        else "width:min(92vw,400px); height:min(70vh,560px);"
-    return f"""
-    <style>
-      /* expanded chat panel (container key="asst") */
-      .st-key-asst {{
-        position:fixed !important; right:20px; bottom:20px; left:auto; z-index:9999;
-        {size}
-        background:#fff; border:1px solid #d0d7de; border-radius:16px;
-        box-shadow:0 12px 38px rgba(0,0,0,.30); padding:12px 16px 6px; overflow:auto;
-      }}
-      /* collapsed launcher (button key="asst_launch") */
-      .st-key-asst_launch {{
-        position:fixed !important; right:20px; bottom:20px; left:auto; z-index:9999; width:auto;
-      }}
-      .st-key-asst_launch button {{
-        border-radius:24px; box-shadow:0 8px 24px rgba(0,0,0,.30);
-        background:#ff4b4b; color:#fff; border:none; font-weight:600; padding:.55rem 1rem;
-      }}
-      section.main .block-container {{ padding-bottom:6rem; }}
-    </style>
-    """
-
-
-def render_assistant() -> None:
-    """A small floating chat assistant, expandable, available on every page."""
-    import nl_sql
-
-    ss = st.session_state
-    ss.setdefault("asst_open", False)
-    ss.setdefault("asst_big", False)
-    ss.setdefault("ask_msgs", [])
-
-    # Collapsed: just a launcher button pinned bottom-right (the button's own
-    # st-key class is fixed-positioned — no wrapper needed).
-    if not ss.asst_open:
-        st.markdown(_assistant_css(False), unsafe_allow_html=True)
-        if st.button("💬 Ask the data", key="asst_launch"):
-            ss.asst_open = True
-            st.rerun()
-        return
-
-    st.markdown(_assistant_css(ss.asst_big), unsafe_allow_html=True)
-    with st.container(key="asst"):
-        h1, h2, h3, h4 = st.columns([6, 1, 1, 1])
-        h1.markdown("**💬 Ask the data**")
-        if h2.button("🗑", key="asst_clear", help="Clear chat"):
-            ss.ask_msgs = []
-            st.rerun()
-        if h3.button("⤢" if not ss.asst_big else "⤡", key="asst_size",
-                     help="Resize"):
-            ss.asst_big = not ss.asst_big
-            st.rerun()
-        if h4.button("✕", key="asst_hide", help="Minimize"):
-            ss.asst_open = False
-            st.rerun()
-
-        if not os.environ.get("OPENAI_API_KEY"):
-            st.info("Set `OPENAI_API_KEY` on the server to enable this assistant.")
-            return
-
-        if not ss.ask_msgs:
-            st.caption("Ask in plain English — I write read-only SQL and answer "
-                       "**only from the results**. Try:")
-            for e in EXAMPLES:
-                st.caption(f"• {e}")
-
-        # Replay history (stored content only — no re-calls).
-        for m in ss.ask_msgs:
-            with st.chat_message(m["role"]):
-                if m.get("sql"):
-                    with st.expander("SQL"):
-                        st.code(m["sql"], language="sql")
-                if m.get("table") is not None:
-                    st.dataframe(m["table"], width="stretch", hide_index=True, height=220)
-                st.markdown(m["content"])
-
-        with st.form(key="asst_form", clear_on_submit=True):
-            q = st.text_input("Ask", label_visibility="collapsed",
-                              placeholder="Ask about ACS, PUMS, or CCES…")
-            sent = st.form_submit_button("Send", width="stretch")
-
-        if sent and q.strip():
-            ss.ask_msgs.append({"role": "user", "content": q})
-            with st.chat_message("user"):
-                st.markdown(q)
-            with st.chat_message("assistant"):
-                entry = _answer_turn(nl_sql, q)
-            ss.ask_msgs.append(entry)
-
 
 # ===========================================================================
 # Router
 # ===========================================================================
 st.sidebar.title("🔎 Census Explorer")
 dataset = st.sidebar.radio("Dataset", ["ACS aggregate", "PUMS microdata", "CCES survey"])
+st.sidebar.divider()
+st.sidebar.link_button("💬 Open the Assistant", "/assistant", width="stretch")
+st.sidebar.caption("Ask the data in plain English →")
 st.sidebar.divider()
 try:
     if dataset == "ACS aggregate":
@@ -553,5 +394,3 @@ except Exception as exc:  # noqa: BLE001
         "Is the DB up? `docker ps --filter name=pgbigdata-db`"
     )
 
-# The assistant floats on every page, regardless of the selected dataset.
-render_assistant()

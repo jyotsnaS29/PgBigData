@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Census Data Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --canvas:#fafaf9; --surface:#ffffff; --surface-2:#f4f4f2; --surface-3:#ebebe9;
+  --border:rgba(0,0,0,.07); --border-strong:rgba(0,0,0,.13);
+  --ink:#1c1d22; --muted:#6b6f76; --faint:#9aa0a8;
+  --accent:#7c77f6; --accent-ink:#5b54e6;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  color:var(--ink);
+  background:radial-gradient(1200px 600px at 50% -220px,rgba(124,119,246,.07),transparent 70%),var(--canvas);
+  -webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;
+}
+header{
+  padding:14px 22px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;background:rgba(255,255,255,.7);backdrop-filter:blur(8px);
+  position:sticky;top:0;z-index:10;
+}
+.logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:#fff;font-size:15px;
+  background:linear-gradient(135deg,#7c77f6,#9d7bff);box-shadow:0 4px 14px rgba(124,119,246,.35)}
+header .t{font-weight:650;font-size:15px}
+header .s{font-size:12px;color:var(--muted)}
+header .right{margin-left:auto;font-size:12px;color:var(--faint)}
+header a{color:var(--accent-ink);text-decoration:none}
+
+main{flex:1;overflow-y:auto}
+.wrap{max-width:760px;margin:0 auto;padding:26px 20px 40px}
+
+/* empty state */
+.hero h1{font-size:26px;margin:6px 0 2px;font-weight:700}
+.hero p{color:var(--muted);margin:0 0 22px}
+.grp{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 8px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.card{border:1px solid var(--border);background:var(--surface);border-radius:12px;padding:12px 14px;
+  cursor:pointer;font-size:13.5px;color:var(--ink);transition:.15s;line-height:1.4}
+.card:hover{border-color:var(--border-strong);box-shadow:0 6px 20px rgba(0,0,0,.05);transform:translateY(-1px)}
+.card .ico{color:var(--accent);margin-right:6px}
+@media(max-width:560px){.cards{grid-template-columns:1fr}}
+
+/* messages */
+.msg{display:flex;gap:12px;margin:22px 0}
+.msg.user{justify-content:flex-end}
+.bubble{background:var(--surface-2);border:1px solid var(--border);border-radius:14px;
+  padding:10px 14px;max-width:80%;white-space:pre-wrap;line-height:1.5}
+.avatar{width:30px;height:30px;border-radius:50%;flex:0 0 30px;display:grid;place-items:center;color:#fff;
+  font-size:14px;background:linear-gradient(135deg,#7c77f6,#9d7bff);
+  box-shadow:0 0 0 1px rgba(0,0,0,.04),0 6px 20px rgba(124,119,246,.22)}
+.ai .body{flex:1;min-width:0}
+.status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13.5px;margin:3px 0}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite ease-in-out}
+@keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
+.answer{line-height:1.6;font-size:15px;margin-top:2px}
+.answer.refused{color:#9a3412}
+details.sql{margin:8px 0;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden}
+details.sql summary{cursor:pointer;padding:7px 12px;font-size:12.5px;color:var(--muted);user-select:none}
+details.sql pre{margin:0;padding:12px;background:var(--surface-2);overflow:auto;font-size:12.5px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.45}
+.tablewrap{margin:8px 0;border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:330px}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap}
+th{background:var(--surface-2);position:sticky;top:0;font-weight:600}
+tr:hover td{background:var(--surface-2)}
+.more{font-size:12px;color:var(--faint);padding:6px 10px}
+
+/* composer */
+.composer{position:sticky;bottom:0;background:linear-gradient(transparent,var(--canvas) 28%);padding:14px 20px 18px}
+.composer .inner{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:16px;padding:8px 8px 8px 14px;
+  box-shadow:0 8px 30px rgba(0,0,0,.06)}
+.composer .inner:focus-within{box-shadow:0 0 0 2px rgba(124,119,246,.25),0 8px 30px rgba(0,0,0,.06)}
+textarea{flex:1;border:none;outline:none;resize:none;font:inherit;font-size:15px;background:transparent;
+  max-height:160px;line-height:1.5;padding:6px 0;color:var(--ink)}
+button.send{width:38px;height:38px;border:none;border-radius:11px;cursor:pointer;color:#fff;font-size:17px;
+  background:linear-gradient(135deg,#7c77f6,#9d7bff);display:grid;place-items:center;transition:.15s}
+button.send:hover{filter:brightness(1.05)}
+button.send:disabled{opacity:.4;cursor:default}
+.hint{max-width:760px;margin:8px auto 0;font-size:11.5px;color:var(--faint);text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">◆</div>
+  <div>
+    <div class="t">Census Data Assistant</div>
+    <div class="s">Ask in plain English · answers grounded in the data</div>
+  </div>
+  <div class="right"><a href="/">← Dashboard</a></div>
+</header>
+
+<main id="main">
+  <div class="wrap" id="thread">
+    <div class="hero" id="hero">
+      <h1>What would you like to know?</h1>
+      <p>I write a read-only SQL query, run it against ACS, PUMS &amp; CCES, and answer only from the results.</p>
+      <div id="cards"></div>
+    </div>
+  </div>
+</main>
+
+<div class="composer">
+  <div class="inner">
+    <textarea id="input" rows="1" placeholder="Ask about ACS, PUMS, or CCES…"></textarea>
+    <button class="send" id="send" title="Send (Enter)">↑</button>
+  </div>
+  <div class="hint">Read-only · answers cite only the returned rows · powered by your data warehouse</div>
+</div>
+
+<script>
+const PROMPTS = [
+  ["ACS · aggregate", "◑", [
+    "Top 5 counties by median household income in 2024",
+    "Which 5 states have the highest median home value in 2023?",
+  ]],
+  ["PUMS · microdata", "◐", [
+    "Weighted mean person income by age band, PUMS 2024",
+    "Weighted population by education level, PUMS 2024",
+  ]],
+  ["CCES · survey", "◔", [
+    "Weighted party ID breakdown for CCES 2024",
+    "Average ACS county median income by party ID, CCES 2024",
+  ]],
+];
+
+const thread = document.getElementById('thread');
+const hero = document.getElementById('hero');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+let busy = false;
+
+// build prompt cards
+const cardsEl = document.getElementById('cards');
+for (const [group, ico, items] of PROMPTS) {
+  const g = document.createElement('div'); g.className='grp'; g.textContent=group; cardsEl.appendChild(g);
+  const row = document.createElement('div'); row.className='cards';
+  for (const p of items) {
+    const c = document.createElement('div'); c.className='card';
+    c.innerHTML = `<span class="ico">${ico}</span>${escapeHtml(p)}`;
+    c.onclick = () => { input.value = p; submit(); };
+    row.appendChild(c);
+  }
+  cardsEl.appendChild(row);
+}
+
+function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtAnswer(s){return escapeHtml(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/\n/g,'<br>');}
+
+function addUser(text){
+  const m=document.createElement('div'); m.className='msg user';
+  const b=document.createElement('div'); b.className='bubble'; b.textContent=text;
+  m.appendChild(b); thread.appendChild(m); scroll();
+}
+
+function addAI(){
+  const m=document.createElement('div'); m.className='msg ai';
+  m.innerHTML=`<div class="avatar">◆</div><div class="body">
+     <div class="status"><span class="dot"></span><span class="stxt">Thinking…</span></div></div>`;
+  thread.appendChild(m); scroll();
+  return m.querySelector('.body');
+}
+
+function scroll(){ document.getElementById('main').scrollTop = thread.scrollHeight + 999; }
+
+function renderTable(body, columns, rows){
+  const wrap=document.createElement('div'); wrap.className='tablewrap';
+  let html='<table><thead><tr>'+columns.map(c=>`<th>${escapeHtml(String(c))}</th>`).join('')+'</tr></thead><tbody>';
+  const show=rows.slice(0,50);
+  for(const r of show){ html+='<tr>'+r.map(v=>`<td>${v===null?'<span style="color:var(--faint)">∅</span>':escapeHtml(String(v))}</td>`).join('')+'</tr>'; }
+  html+='</tbody></table>';
+  wrap.innerHTML=html;
+  if(rows.length>show.length){ const d=document.createElement('div'); d.className='more'; d.textContent=`+${rows.length-show.length} more rows`; wrap.appendChild(d);}
+  body.appendChild(wrap);
+}
+
+async function submit(){
+  const q=input.value.trim();
+  if(!q||busy) return;
+  hero.style.display='none';
+  busy=true; send.disabled=true; input.value=''; autogrow();
+  addUser(q);
+  const body=addAI();
+  const statusEl=body.querySelector('.status'); const stxt=body.querySelector('.stxt');
+  let answerEl=null, sqlShown=false;
+
+  try{
+    const res=await fetch('api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+    const reader=res.body.getReader(); const dec=new TextDecoder(); let buf='';
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      let i;
+      while((i=buf.indexOf('\n\n'))>=0){
+        const raw=buf.slice(0,i); buf=buf.slice(i+2);
+        const ev=parseSSE(raw); if(!ev) continue;
+        handle(ev);
+      }
+    }
+  }catch(e){
+    stxt.textContent=''; statusEl.style.display='none';
+    const a=document.createElement('div'); a.className='answer refused'; a.textContent='⚠️ '+e; body.appendChild(a);
+  }
+  busy=false; send.disabled=false; input.focus();
+
+  function handle(ev){
+    if(ev.event==='status'){ stxt.textContent=ev.data+'…'; }
+    else if(ev.event==='sql'){
+      if(!sqlShown){ const d=document.createElement('details'); d.className='sql';
+        d.innerHTML=`<summary>View SQL</summary><pre>${escapeHtml(ev.data)}</pre>`;
+        body.appendChild(d); sqlShown=true; scroll(); }
+    }
+    else if(ev.event==='table'){ renderTable(body, ev.data.columns, ev.data.rows); scroll(); }
+    else if(ev.event==='token'){
+      statusEl.style.display='none';
+      if(!answerEl){ answerEl=document.createElement('div'); answerEl.className='answer'; answerEl.dataset.raw=''; body.appendChild(answerEl); }
+      answerEl.dataset.raw+=ev.data; answerEl.innerHTML=fmtAnswer(answerEl.dataset.raw); scroll();
+    }
+    else if(ev.event==='empty'||ev.event==='refused'||ev.event==='error'){
+      statusEl.style.display='none';
+      const a=document.createElement('div'); a.className='answer'+(ev.event!=='empty'?' refused':'');
+      a.textContent=(ev.event==='refused'?'🛑 ':ev.event==='error'?'⚠️ ':'')+ev.data; body.appendChild(a); scroll();
+    }
+    else if(ev.event==='done'){ statusEl.style.display='none'; }
+  }
+}
+
+function parseSSE(raw){
+  let event='message', data='';
+  for(const line of raw.split('\n')){
+    if(line.startsWith('event:')) event=line.slice(6).trim();
+    else if(line.startsWith('data:')) data+=line.slice(5).trim();
+  }
+  if(!data) return null;
+  try{ return {event, data:JSON.parse(data)}; }catch{ return {event, data}; }
+}
+
+function autogrow(){ input.style.height='0px'; input.style.height=Math.min(input.scrollHeight,160)+'px'; }
+input.addEventListener('input',autogrow);
+input.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); }});
+send.onclick=submit;
+input.focus();
+</script>
+</body>
+</html>

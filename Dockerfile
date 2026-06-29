@@ -11,7 +11,8 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY sql ./sql
 COPY dashboard ./dashboard
-RUN pip install -e ".[dashboard]"
+COPY assistant ./assistant
+RUN pip install -e ".[dashboard,server]"
 
 EXPOSE 8501
 

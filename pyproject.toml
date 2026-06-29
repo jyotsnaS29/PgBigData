@@ -18,6 +18,11 @@ dashboard = [
     "pandas>=2.0",
     "openai>=1.40",
 ]
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "openai>=1.40",
+]
 
 [project.scripts]
 pgbigdata = "pgbigdata.cli:main"
